@@ -103,6 +103,158 @@ def init_report_analyses_table():
         conn.commit()
 
 
+def init_assistant_tables():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_conversations (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                context_report_id INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL
+            )
+            """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_messages (
+                id SERIAL PRIMARY KEY,
+                conversation_id TEXT NOT NULL
+                    REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                content TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL
+            )
+            """)
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS assistant_messages_conversation_idx
+            ON assistant_messages (conversation_id, id DESC)
+            """)
+        conn.commit()
+
+
+def create_assistant_conversation_with_exchange(
+    conversation_id,
+    user_id,
+    context_report_id,
+    user_message,
+    assistant_message,
+):
+    """Atomically create a conversation and save its first complete turn."""
+    now = datetime.now()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO assistant_conversations
+                    (id, user_id, context_report_id, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    conversation_id,
+                    user_id,
+                    context_report_id,
+                    now,
+                    now,
+                )
+            )
+            cur.execute(
+                """
+                INSERT INTO assistant_messages
+                    (conversation_id, role, content, created_at)
+                VALUES
+                    (%s, 'user', %s, %s),
+                    (%s, 'assistant', %s, %s)
+                """,
+                (
+                    conversation_id,
+                    user_message,
+                    now,
+                    conversation_id,
+                    assistant_message,
+                    now,
+                )
+            )
+        conn.commit()
+
+
+def get_assistant_conversation(conversation_id, user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, context_report_id, created_at, updated_at
+                FROM assistant_conversations
+                WHERE id = %s AND user_id = %s
+                """,
+                (conversation_id, user_id)
+            )
+            row = cur.fetchone()
+        return row
+    finally:
+        conn.close()
+
+
+def get_assistant_messages(conversation_id, limit=12):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT role, content
+                FROM (
+                    SELECT id, role, content
+                    FROM assistant_messages
+                    WHERE conversation_id = %s
+                    ORDER BY id DESC
+                    LIMIT %s
+                ) AS recent_messages
+                ORDER BY id ASC
+                """,
+                (conversation_id, limit)
+            )
+            rows = cur.fetchall()
+        return [
+            {"role": role, "content": content}
+            for role, content in rows
+        ]
+    finally:
+        conn.close()
+
+
+def add_assistant_exchange(conversation_id, user_message, assistant_message):
+    """Save one complete turn so failed provider calls do not leave half-turns."""
+    now = datetime.now()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO assistant_messages
+                    (conversation_id, role, content, created_at)
+                VALUES
+                    (%s, 'user', %s, %s),
+                    (%s, 'assistant', %s, %s)
+                """,
+                (
+                    conversation_id,
+                    user_message,
+                    now,
+                    conversation_id,
+                    assistant_message,
+                    now,
+                )
+            )
+            cur.execute(
+                """
+                UPDATE assistant_conversations
+                SET updated_at = %s
+                WHERE id = %s
+                """,
+                (now, conversation_id)
+            )
+        conn.commit()
+
+
 def add_uploaded_report(user_id, report_type):
     date_uploaded = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_connection() as conn:
@@ -308,6 +460,37 @@ def get_report_analysis_records(user_id, report_id=None):
             "current": current_report,
             "previous": previous_report,
         }
+    finally:
+        conn.close()
+
+
+def get_user_profile_record(user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    name,
+                    age,
+                    gender,
+                    weight,
+                    height,
+                    bmi,
+                    diabetes_status,
+                    hypertension,
+                    previous_liver_disease,
+                    family_history,
+                    activity_level,
+                    exercise_frequency,
+                    alcohol_consumption,
+                    smoking_status
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,)
+            )
+            return cur.fetchone()
     finally:
         conn.close()
 
@@ -575,3 +758,4 @@ init_db()
 init_reports_table()
 init_upload_history_table()
 init_report_analyses_table()
+init_assistant_tables()

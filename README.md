@@ -217,6 +217,43 @@ factors, four monitoring areas, and a recommendation. It reuses the shared
 biomarker calculations and cached report narrative instead of making a second
 AI request.
 
+### 7. Health Assistant Chat
+
+Call `POST /assistant/chat` to start or continue a patient conversation. The
+first request may include a `report_id`; when omitted, the latest saved report
+is used. The chosen report remains fixed for that conversation so later uploads
+cannot silently change the clinical context.
+
+Start a conversation:
+
+```json
+{
+  "user_id": 1,
+  "report_id": 42,
+  "message": "Is my ALT improving?"
+}
+```
+
+Continue it using the returned `conversation_id`:
+
+```json
+{
+  "user_id": 1,
+  "conversation_id": "fae67f3f-bb16-4bc1-98cf-654d6018af24",
+  "message": "What should I ask my doctor?"
+}
+```
+
+The response includes `reply`, `context_report_id`, and
+`requires_urgent_care`. Conversations and messages are stored in PostgreSQL,
+while only the most recent 12 messages are sent to the model. The model receives
+a minimized profile and only the selected report, not the user's email or full
+report history.
+
+For the current MVP, `user_id` follows the convention used by the other routes.
+It must be replaced by an authenticated server-side user identity before public
+deployment.
+
 ---
 
 ## ⚙️ System Prerequisites
@@ -258,6 +295,8 @@ Your host system must run the following dependencies to operate OCR and file loa
     ```env
     DATABASE_URL=postgresql://neondb_owner:PASSWORD@HOST/neondb?sslmode=require
     FIREWORKS_API_KEY=your_fireworks_api_key
+    GROQ_API_KEY=your_groq_api_key
+    GROQ_MODEL=llama-3.3-70b-versatile
     ```
 5.  **Start the Flask App**:
     ```bash

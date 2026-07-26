@@ -8,6 +8,7 @@ from routes.insights import insights_bp
 from routes.report_analysis import report_analysis_bp
 from routes.dashboard import dashboard_bp
 from routes.health_insights import health_insights_bp
+from routes.chatbot import chatbot_bp
 
 app = Flask(__name__)
 
@@ -20,6 +21,7 @@ app.register_blueprint(insights_bp)
 app.register_blueprint(report_analysis_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(health_insights_bp)
+app.register_blueprint(chatbot_bp)
 
 @app.route("/", methods=["GET"])
 def home():
