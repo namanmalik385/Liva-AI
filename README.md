@@ -199,6 +199,24 @@ provider again. Deterministic scores, risk, statuses, and trends are recomputed
 on each request so they cannot become stale. Missing biomarker values and their
 status, trend, and insight are returned as `null`.
 
+### 6. Health Insights
+
+Call `POST /health-insights` with the same `user_id` and optional `report_id`
+used for report analysis:
+
+```json
+{
+  "user_id": 1,
+  "report_id": 42
+}
+```
+
+The response provides a short health-score summary, four current-status cards,
+all biomarker clinical insights, four positive-change cards, paired risk
+factors, four monitoring areas, and a recommendation. It reuses the shared
+biomarker calculations and cached report narrative instead of making a second
+AI request.
+
 ---
 
 ## ⚙️ System Prerequisites
