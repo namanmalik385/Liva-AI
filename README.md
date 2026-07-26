@@ -160,7 +160,44 @@ Forces metric calculations or queries the Fireworks AI LLM to interpret liver pa
 | :--- | :--- | :--- | :--- | :--- |
 | `POST` | `/calculate` | `calculate.py` | Recalculates and saves latest APRI & FIB-4 scores from blood panel results. | `{"user_id": 1}` |
 | `POST` | `/insights` | `insights.py` | Interrogates Fireworks LLM for generalized fitness & lifestyle suggestions based on history. | `{"user_id": 1}` |
-| `POST` | `/report-analysis` | `report_analysis.py` | Interrogates Fireworks LLM for a specific clinical description of current laboratory biomarkers. | `{"user_id": 1}` |
+| `POST` | `/report-analysis` | `report_analysis.py` | Returns deterministic health/risk values and cached AI explanations for one saved report. Pass the `report_id` returned by `/calculate` to analyze that exact upload set. | `{"user_id": 1, "report_id": 42}` |
+
+### 4. Dashboard (`routes/dashboard.py`)
+
+Returns the dashboard-ready health score, latest biomarker values and trends,
+structured AI insights, and the next suggested test.
+
+| Method | Endpoint | Query Parameter |
+| :--- | :--- | :--- |
+| `GET` | `/dashboard` | `user_id` (Integer) |
+
+Example:
+
+```http
+GET /dashboard?user_id=1
+```
+
+The response always contains every supported biomarker. When a biomarker has not
+been extracted, its `score`, `status`, and `trend` are all `null`. Biomarker
+trends compare the latest non-empty value with the previous non-empty value.
+The health-score trend compares the latest two saved reports. The response also
+contains exactly three AI insight objects and the next two suggested tests.
+Unchanged trends are returned as an empty string. Insight statuses are `normal`,
+`monitor`, or `info`.
+
+### 5. AI Report Analysis
+
+Call `POST /report-analysis` after `/calculate` saves the current upload set.
+The endpoint returns the health score and trend, a numeric slider-ready risk
+level, every supported biomarker with its current value/status/trend/insight,
+and an AI summary. Biomarker values always come from the selected current
+report; the preceding report is used only for trends.
+
+The AI narrative is cached by `report_id` and analysis version in
+`report_analyses`, so opening the same analysis repeatedly does not call the AI
+provider again. Deterministic scores, risk, statuses, and trends are recomputed
+on each request so they cannot become stale. Missing biomarker values and their
+status, trend, and insight are returned as `null`.
 
 ---
 

@@ -1,9 +1,8 @@
 from db import get_connection
 
+
 def calculate_health_score(user_row, latest_report=None):
-
-    score = 100
-
+    """Return a deterministic MVP wellness score, not a diagnostic score."""
     (
         name,
         age,
@@ -21,42 +20,49 @@ def calculate_health_score(user_row, latest_report=None):
         smoking_status
     ) = user_row
 
-    # Lifestyle penalties
-
+    profile_penalty = 0
     if diabetes_status:
-        score -= 10
+        profile_penalty += 6
 
     if hypertension:
-        score -= 5
+        profile_penalty += 4
 
     if previous_liver_disease:
-        score -= 15
+        profile_penalty += 10
 
     if family_history:
-        score -= 5
+        profile_penalty += 4
 
     if smoking_status == "current":
-        score -= 10
+        profile_penalty += 8
     elif smoking_status == "former":
-        score -= 5
+        profile_penalty += 3
 
     if alcohol_consumption == "heavy":
-        score -= 15
+        profile_penalty += 10
     elif alcohol_consumption == "moderate":
-        score -= 8
+        profile_penalty += 5
     elif alcohol_consumption == "occasional":
-        score -= 3
+        profile_penalty += 2
 
     if bmi is not None:
         if bmi >= 30:
-            score -= 10
+            profile_penalty += 8
         elif bmi >= 25:
-            score -= 5
+            profile_penalty += 4
 
-    # Biomarker penalties
+    if activity_level == "sedentary":
+        profile_penalty += 4
+    elif activity_level == "lightly active":
+        profile_penalty += 2
 
+    if exercise_frequency == "never":
+        profile_penalty += 4
+    elif exercise_frequency == "1-2 times per week":
+        profile_penalty += 2
+
+    report_penalty = 0
     if latest_report:
-
         (
             ast,
             alt,
@@ -74,43 +80,91 @@ def calculate_health_score(user_row, latest_report=None):
             date_added
         ) = latest_report
 
-        if ast is not None and ast > 40:
-            score -= min(15, (ast - 40) / 5)
-
-        if alt is not None and alt > 40:
-            score -= min(15, (alt - 40) / 5)
-
-        if bilirubin is not None and bilirubin > 1.2:
-            score -= 10
-
-        if albumin is not None and albumin < 3.5:
-            score -= 10
-
-        if platelets is not None and platelets < 150:
-            score -= 10
+        fibrosis_penalties = []
+        if fib4 is not None:
+            if fib4 >= 2.67:
+                fibrosis_penalties.append(18)
+            elif fib4 >= 1.3:
+                fibrosis_penalties.append(8)
+            else:
+                fibrosis_penalties.append(0)
 
         if apri is not None:
             if apri > 1.5:
-                score -= 15
-            elif apri > 0.7:
-                score -= 8
+                fibrosis_penalties.append(15)
+            elif apri > 0.5:
+                fibrosis_penalties.append(7)
+            else:
+                fibrosis_penalties.append(0)
 
-        if fib4 is not None:
-            if fib4 > 3.25:
-                score -= 15
-            elif fib4 > 1.45:
-                score -= 8
+        if fibrosis_penalties:
+            # FIB-4 and APRI share AST and platelet inputs. Use the higher
+            # penalty instead of counting the same abnormality multiple times.
+            report_penalty += max(fibrosis_penalties)
+        else:
+            enzyme_ratio = max(
+                (ast or 0) / 40,
+                (alt or 0) / 40,
+            )
+            if enzyme_ratio > 3:
+                report_penalty += 12
+            elif enzyme_ratio > 2:
+                report_penalty += 8
+            elif enzyme_ratio > 1:
+                report_penalty += 4
+
+            if platelets is not None:
+                if platelets < 100:
+                    report_penalty += 8
+                elif platelets < 150:
+                    report_penalty += 4
+
+        if bilirubin is not None:
+            if bilirubin > 3:
+                report_penalty += 10
+            elif bilirubin > 1.2:
+                report_penalty += 6
+
+        if albumin is not None:
+            if albumin < 3:
+                report_penalty += 10
+            elif albumin < 3.5:
+                report_penalty += 6
+
+        if inr is not None:
+            if inr > 1.5:
+                report_penalty += 10
+            elif inr > 1.2:
+                report_penalty += 5
+        elif pt is not None:
+            if pt > 15:
+                report_penalty += 8
+            elif pt > 13.5:
+                report_penalty += 4
+
+        if afp is not None:
+            if afp >= 400:
+                report_penalty += 12
+            elif afp >= 20:
+                report_penalty += 6
+
+        if hbsag or anti_hcv:
+            report_penalty += 10
 
         if ultrasound_prediction:
             prediction = str(ultrasound_prediction).lower()
 
-            if "cirrhosis" in prediction:
-                score -= 25
-            elif "fibrosis" in prediction:
-                score -= 15
-            elif "fatty" in prediction:
-                score -= 10
+            if "hcc" in prediction:
+                report_penalty += 25
+            elif "hemangioma" in prediction:
+                report_penalty += 2
+            elif prediction != "normal":
+                report_penalty += 12
 
+    # Caps keep profile-only risk from overwhelming measured results and
+    # prevent a collection of correlated abnormal values from driving the
+    # score below zero.
+    score = 100 - min(profile_penalty, 35) - min(report_penalty, 65)
     score = max(0, min(100, round(score)))
 
     return score

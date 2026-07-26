@@ -71,15 +71,12 @@ def get_liver_analysis(user_id):
         return {"error": "Failed to parse LLM response", "raw": raw_content}
 
 
-def get_report_analysis(user_id):
+def get_report_analysis(analysis_context):
 
     if not API_KEY:
         return {"error": "FIREWORKS_API_KEY not set"}
 
-    prompt = build_report_analysis_request(user_id)
-
-    if prompt is None:
-        return {"error": "User not found"}
+    prompt = build_report_analysis_request(analysis_context)
 
     headers = {
         "Accept": "application/json",
@@ -107,7 +104,6 @@ def get_report_analysis(user_id):
 
     try:
         response_json = response.json()
-        print(f"API response: {response_json}")
         raw_content = response_json["choices"][0]["message"]["content"]
     except (KeyError, IndexError, ValueError) as e:
         print(f"Unexpected API response structure: {e}")

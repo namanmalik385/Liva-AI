@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 
-from models.patient_data import patient_data
+from models.patient_data import clear_patient_data, get_patient_data
 
 from calculators.fib4 import calculate_fib4
 from calculators.apri import calculate_apri
@@ -18,6 +18,7 @@ def calculate():
         data = request.get_json()
 
         user_id = int(data["user_id"])
+        patient_data = get_patient_data(user_id)
 
         age = float(data["age"])
         ast_uln = None
@@ -99,6 +100,7 @@ def calculate():
             "apri": apri_score,
             "ultrasound_prediction": patient_data.get("ultrasound_prediction"),
         }
+        clear_patient_data(user_id)
 
         return jsonify({
             "success": True,

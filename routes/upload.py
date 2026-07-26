@@ -11,7 +11,7 @@ from parsers.afp_parser import parse_afp
 from parsers.hepatitis_parser import parse_hepatitis
 from services.ultrasound_model import predict_liver_condition
 
-from models.patient_data import patient_data
+from models.patient_data import get_patient_data
 
 from db import add_uploaded_report
 from db import get_recent_reports
@@ -53,6 +53,8 @@ def upload_file():
                 "success": False,
                 "error": "user_id is required"
             }), 400
+
+        patient_data = get_patient_data(user_id)
 
         # Save PDF
         filename = secure_filename(file.filename)
