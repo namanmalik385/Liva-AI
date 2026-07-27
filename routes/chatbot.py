@@ -9,41 +9,35 @@ from services.chatbot_service import (
     ChatbotValidationError,
     chat,
 )
+from services.auth_service import auth_required, current_user_id
 
 
 chatbot_bp = Blueprint("chatbot", __name__)
 
 
 @chatbot_bp.route("/assistant/chat", methods=["POST"])
+@auth_required
 def assistant_chat():
     data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id")
     report_id = data.get("report_id")
 
-    if user_id is None:
-        return jsonify({
-            "success": False,
-            "error": "user_id is required",
-        }), 400
-
     try:
-        user_id = int(user_id)
         report_id = int(report_id) if report_id is not None else None
     except (TypeError, ValueError):
         return jsonify({
             "success": False,
-            "error": "user_id and report_id must be integers",
+            "error": "report_id must be an integer",
         }), 400
 
-    if user_id <= 0 or (report_id is not None and report_id <= 0):
+    if report_id is not None and report_id <= 0:
         return jsonify({
             "success": False,
-            "error": "user_id and report_id must be positive integers",
+            "error": "report_id must be a positive integer",
         }), 400
 
     try:
         result = chat(
-            user_id=user_id,
+            user_id=current_user_id(),
             message=data.get("message"),
             conversation_id=data.get("conversation_id"),
             report_id=report_id,

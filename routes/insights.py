@@ -1,36 +1,26 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify
 
 from llm import get_liver_analysis
+from services.auth_service import auth_required, current_user_id
 
 insights_bp = Blueprint("insights", __name__)
 
 
 @insights_bp.route("/insights", methods=["POST"])
+@auth_required
 def insights():
 
     try:
-
-        data = request.get_json()
-
-        user_id = data.get("user_id")
-
-        if not user_id:
-
-            return jsonify({
-                "success": False,
-                "error": "user_id is required"
-            }), 400
-
-        result = get_liver_analysis(user_id)
+        result = get_liver_analysis(current_user_id())
 
         return jsonify({
             "success": True,
             "analysis": result
         })
 
-    except Exception as e:
+    except Exception:
 
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": "Could not load insights"
         }), 500

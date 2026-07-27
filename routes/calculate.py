@@ -6,21 +6,41 @@ from calculators.fib4 import calculate_fib4
 from calculators.apri import calculate_apri
 
 from db import add_report
+from services.auth_service import auth_required, current_user_id
 
 calculate_bp = Blueprint("calculate", __name__)
 
 
 @calculate_bp.route("/calculate", methods=["POST"])
+@auth_required
 def calculate():
 
     try:
 
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({
+                "success": False,
+                "error": "A JSON request body is required"
+            }), 400
 
-        user_id = int(data["user_id"])
+        try:
+            age = float(data["age"])
+        except (KeyError, TypeError, ValueError):
+            return jsonify({
+                "success": False,
+                "error": "age must be a number"
+            }), 400
+
+        if age < 13 or age > 120:
+            return jsonify({
+                "success": False,
+                "error": "age must be between 13 and 120"
+            }), 400
+
+        user_id = current_user_id()
         patient_data = get_patient_data(user_id)
 
-        age = float(data["age"])
         ast_uln = None
 
         if patient_data.get("ast_uln") is not None:
@@ -83,7 +103,6 @@ def calculate():
             }), 500
 
         report_data = {
-            "user_id": user_id,
             "age": age,
             "ast_uln": ast_uln,
             "platelets": patient_data.get("platelets"),
@@ -110,9 +129,9 @@ def calculate():
             "report_data": report_data
         })
     
-    except Exception as e:
+    except Exception:
 
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": "Could not calculate and save report"
         }), 500

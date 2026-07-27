@@ -4,6 +4,7 @@ from services.report_analysis_service import (
     ReportNotFoundError,
     build_report_analysis,
 )
+from services.auth_service import auth_required, current_user_id
 
 report_analysis_bp = Blueprint(
     "report_analysis",
@@ -14,30 +15,28 @@ report_analysis_bp = Blueprint(
     "/report-analysis",
     methods=["POST"]
 )
+@auth_required
 def report_analysis():
 
     data = request.get_json(silent=True) or {}
 
-    user_id = data.get("user_id")
     report_id = data.get("report_id")
 
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "error": "user_id is required"
-        }), 400
-
     try:
-        user_id = int(user_id)
         report_id = int(report_id) if report_id is not None else None
     except (TypeError, ValueError):
         return jsonify({
             "success": False,
-            "error": "user_id and report_id must be integers"
+            "error": "report_id must be an integer"
+        }), 400
+    if report_id is not None and report_id <= 0:
+        return jsonify({
+            "success": False,
+            "error": "report_id must be a positive integer"
         }), 400
 
     try:
-        result = build_report_analysis(user_id, report_id)
+        result = build_report_analysis(current_user_id(), report_id)
     except ReportNotFoundError:
         return jsonify({
             "success": False,

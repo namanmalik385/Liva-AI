@@ -11,3 +11,5 @@ python-dotenv>=1.2.2
 Flask-CORS>=6.0.0
 psycopg2-binary>=2.9.12
 requests>=2.32.0
+argon2-cffi>=25.1.0
+PyJWT>=2.13.0

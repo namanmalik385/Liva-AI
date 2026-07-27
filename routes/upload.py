@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
-from werkzeug.utils import secure_filename
 import os
+import uuid
 
 from services.text_extractor import extract_text
 
@@ -15,49 +15,96 @@ from models.patient_data import get_patient_data
 
 from db import add_uploaded_report
 from db import get_recent_reports
+from services.auth_service import auth_required, current_user_id
 
 upload_bp = Blueprint("upload", __name__)
 
-UPLOAD_FOLDER = "uploads"
+UPLOAD_FOLDER = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "uploads")
+)
+LAB_REPORT_TYPES = {
+    "lft",
+    "cbc",
+    "coagulation",
+    "afp",
+    "hepatitis",
+}
+SUPPORTED_REPORT_TYPES = LAB_REPORT_TYPES | {"ultrasound"}
+LAB_EXTENSIONS = {".pdf"}
+ULTRASOUND_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
+def _validated_extension(file, report_type):
+    original_name = file.filename or ""
+    extension = os.path.splitext(original_name)[1].lower()
+    allowed_extensions = (
+        ULTRASOUND_EXTENSIONS
+        if report_type == "ultrasound"
+        else LAB_EXTENSIONS
+    )
+    if extension not in allowed_extensions:
+        allowed = ", ".join(sorted(allowed_extensions))
+        raise ValueError(f"Allowed file types: {allowed}")
+
+    header = file.stream.read(8)
+    file.stream.seek(0)
+    is_pdf = header.startswith(b"%PDF-")
+    is_image = (
+        header.startswith(b"\x89PNG\r\n\x1a\n")
+        or header.startswith(b"\xff\xd8\xff")
+    )
+    if report_type == "ultrasound" and not is_image:
+        raise ValueError("The uploaded ultrasound must be a JPEG or PNG image")
+    if report_type != "ultrasound" and not is_pdf:
+        raise ValueError("The uploaded lab report must be a valid PDF")
+
+    return extension
+
+
 @upload_bp.route("/upload", methods=["POST"])
+@auth_required
 def upload_file():
+    filepath = None
 
     try:
-
-        # Get file
         file = request.files.get("file")
 
-        if not file:
+        if file is None or not file.filename:
             return jsonify({
                 "success": False,
                 "error": "No file uploaded"
             }), 400
 
-        # Get report type
         report_type = request.form.get("report_type")
 
-        if not report_type:
+        if not isinstance(report_type, str) or not report_type.strip():
             return jsonify({
                 "success": False,
                 "error": "report_type is required"
             }), 400
+        report_type = report_type.strip().lower()
 
-        user_id = int(request.form.get("user_id"))
-
-        if not user_id:
+        if report_type not in SUPPORTED_REPORT_TYPES:
             return jsonify({
                 "success": False,
-                "error": "user_id is required"
+                "error": "Unsupported report type"
             }), 400
+
+        try:
+            extension = _validated_extension(file, report_type)
+        except ValueError as error:
+            return jsonify({
+                "success": False,
+                "error": str(error),
+            }), 400
+
+        user_id = current_user_id()
 
         patient_data = get_patient_data(user_id)
 
-        # Save PDF
-        filename = secure_filename(file.filename)
+        filename = f"{uuid.uuid4().hex}{extension}"
 
         filepath = os.path.join(
             UPLOAD_FOLDER,
@@ -66,7 +113,7 @@ def upload_file():
 
         file.save(filepath)
 
-        if report_type.lower() == "ultrasound":
+        if report_type == "ultrasound":
 
             result = predict_liver_condition(filepath)
 
@@ -83,34 +130,25 @@ def upload_file():
                 "prediction": result
             })
         
-        # Extract text
         text = extract_text(filepath)
 
-        # Parse report
         results = {}
 
-        if report_type.lower() == "lft":
+        if report_type == "lft":
             results = parse_lft(text)
 
-        elif report_type.lower() == "cbc":
+        elif report_type == "cbc":
             results = parse_cbc(text)
 
-        elif report_type.lower() == "coagulation":
+        elif report_type == "coagulation":
             results = parse_coagulation(text)
 
-        elif report_type.lower() == "afp":
+        elif report_type == "afp":
             results = parse_afp(text)
 
-        elif report_type.lower() == "hepatitis":
-           results = parse_hepatitis(text)
-        
-        else:
-            return jsonify({
-                "success": False,
-                "error": f"Unsupported report type: {report_type}"
-            }), 400
+        elif report_type == "hepatitis":
+            results = parse_hepatitis(text)
 
-        # Update patient data
         patient_data.update(results)
 
         add_uploaded_report(
@@ -125,15 +163,34 @@ def upload_file():
             "patient_data": patient_data
         })
 
-    except Exception as e:
+    except Exception:
 
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": "Could not process uploaded report"
         }), 500
-    
-@upload_bp.route("/recent-reports/<int:user_id>", methods=["GET"])
-def recent_reports(user_id):
+    finally:
+        if filepath is not None:
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+
+
+@upload_bp.route("/recent-reports", methods=["GET"])
+@upload_bp.route(
+    "/recent-reports/<int:requested_user_id>",
+    methods=["GET"],
+)
+@auth_required
+def recent_reports(requested_user_id=None):
+    user_id = current_user_id()
+
+    if requested_user_id is not None and requested_user_id != user_id:
+        return jsonify({
+            "success": False,
+            "error": "Access denied",
+        }), 403
 
     reports = get_recent_reports(user_id)
 

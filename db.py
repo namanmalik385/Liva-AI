@@ -1,8 +1,11 @@
 import psycopg2
 from psycopg2.extras import Json
+import hmac
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+
+from services.password_service import hash_password
 
 load_dotenv()
 
@@ -20,7 +23,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
                 name TEXT,
                 age INTEGER,
                 gender TEXT,
@@ -34,9 +37,454 @@ def init_db():
                 activity_level TEXT,
                 exercise_frequency TEXT,
                 alcohol_consumption TEXT,
-                smoking_status TEXT
+                smoking_status TEXT,
+                terms_accepted_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """)
+            cur.execute(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT"
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW()
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
+                NOT NULL DEFAULT NOW()
+                """
+            )
+
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'users'
+                      AND column_name = 'password'
+                )
+                """
+            )
+            has_legacy_password_column = cur.fetchone()[0]
+
+            if has_legacy_password_column:
+                cur.execute(
+                    """
+                    SELECT id, password
+                    FROM users
+                    WHERE password_hash IS NULL AND password IS NOT NULL
+                    """
+                )
+                for user_id, legacy_password in cur.fetchall():
+                    cur.execute(
+                        """
+                        UPDATE users
+                        SET password_hash = %s
+                        WHERE id = %s
+                        """,
+                        (hash_password(legacy_password), user_id)
+                    )
+
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE password_hash IS NULL"
+            )
+            if cur.fetchone()[0]:
+                raise RuntimeError(
+                    "Users without passwords require an account reset"
+                )
+
+            cur.execute(
+                """
+                SELECT LOWER(TRIM(email))
+                FROM users
+                GROUP BY LOWER(TRIM(email))
+                HAVING COUNT(*) > 1
+                LIMIT 1
+                """
+            )
+            if cur.fetchone() is not None:
+                raise RuntimeError(
+                    "Duplicate user emails must be resolved before startup"
+                )
+
+            cur.execute(
+                "UPDATE users SET email = LOWER(TRIM(email))"
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique
+                ON users (LOWER(email))
+                """
+            )
+            cur.execute(
+                "ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL"
+            )
+            if has_legacy_password_column:
+                cur.execute(
+                    "ALTER TABLE users DROP COLUMN password"
+                )
+        conn.commit()
+
+
+def init_auth_tables():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                refresh_token_hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                last_used_at TIMESTAMPTZ,
+                revoked_at TIMESTAMPTZ
+            )
+            """)
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
+            ON auth_sessions (user_id, expires_at DESC)
+            """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS auth_rate_limits (
+                rate_key TEXT PRIMARY KEY,
+                window_started_at TIMESTAMPTZ NOT NULL,
+                attempts INTEGER NOT NULL,
+                blocked_until TIMESTAMPTZ
+            )
+            """)
+        conn.commit()
+
+
+def get_auth_user_by_email(email):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, password_hash, name, email, age, gender
+                FROM users
+                WHERE LOWER(email) = LOWER(%s)
+                """,
+                (email,)
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def get_auth_user_by_id(user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, email, age, gender
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,)
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "user_id": row[0],
+            "full_name": row[1],
+            "email": row[2],
+            "age": row[3],
+            "gender": row[4],
+        }
+    finally:
+        conn.close()
+
+
+def update_password_hash(user_id, password_hash):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET password_hash = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (password_hash, datetime.now(timezone.utc), user_id)
+            )
+        conn.commit()
+
+
+def create_auth_session(
+    session_id,
+    user_id,
+    refresh_token_hash,
+    expires_at,
+):
+    now = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO auth_sessions
+                    (
+                        id,
+                        user_id,
+                        refresh_token_hash,
+                        created_at,
+                        expires_at
+                    )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    refresh_token_hash,
+                    now,
+                    expires_at,
+                )
+            )
+        conn.commit()
+
+
+def get_auth_session(session_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    user_id,
+                    refresh_token_hash,
+                    expires_at,
+                    revoked_at
+                FROM auth_sessions
+                WHERE id = %s
+                """,
+                (session_id,)
+            )
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def rotate_auth_session(
+    session_id,
+    presented_token_hash,
+    new_session_id,
+    new_token_hash,
+    new_expires_at,
+):
+    now = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT user_id, refresh_token_hash, expires_at, revoked_at
+                FROM auth_sessions
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (session_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                return {"status": "invalid", "user_id": None}
+
+            user_id, stored_hash, expires_at, revoked_at = row
+            token_matches = hmac.compare_digest(
+                stored_hash,
+                presented_token_hash,
+            )
+
+            if not token_matches:
+                return {"status": "invalid", "user_id": user_id}
+
+            if revoked_at is not None:
+                cur.execute(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked_at = COALESCE(revoked_at, %s)
+                    WHERE user_id = %s
+                    """,
+                    (now, user_id)
+                )
+                return {"status": "reused", "user_id": user_id}
+
+            if expires_at <= now:
+                cur.execute(
+                    """
+                    UPDATE auth_sessions
+                    SET revoked_at = %s
+                    WHERE id = %s
+                    """,
+                    (now, session_id)
+                )
+                return {"status": "expired", "user_id": user_id}
+
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = %s, last_used_at = %s
+                WHERE id = %s
+                """,
+                (now, now, session_id)
+            )
+            cur.execute(
+                """
+                INSERT INTO auth_sessions
+                    (
+                        id,
+                        user_id,
+                        refresh_token_hash,
+                        created_at,
+                        expires_at
+                    )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    new_session_id,
+                    user_id,
+                    new_token_hash,
+                    now,
+                    new_expires_at,
+                )
+            )
+        conn.commit()
+    return {"status": "rotated", "user_id": user_id}
+
+
+def is_auth_session_active(session_id, user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM auth_sessions
+                WHERE id = %s
+                  AND user_id = %s
+                  AND revoked_at IS NULL
+                  AND expires_at > %s
+                """,
+                (session_id, user_id, datetime.now(timezone.utc))
+            )
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def revoke_auth_session(session_id, user_id):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = COALESCE(revoked_at, %s)
+                WHERE id = %s AND user_id = %s
+                """,
+                (datetime.now(timezone.utc), session_id, user_id)
+            )
+        conn.commit()
+
+
+def consume_auth_rate_limit(
+    rate_key,
+    limit,
+    window_seconds,
+    block_seconds,
+):
+    now = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO auth_rate_limits
+                    (
+                        rate_key,
+                        window_started_at,
+                        attempts,
+                        blocked_until
+                    )
+                VALUES (%s, %s, 0, NULL)
+                ON CONFLICT (rate_key) DO NOTHING
+                """,
+                (rate_key, now)
+            )
+            cur.execute(
+                """
+                SELECT window_started_at, attempts, blocked_until
+                FROM auth_rate_limits
+                WHERE rate_key = %s
+                FOR UPDATE
+                """,
+                (rate_key,)
+            )
+            window_started_at, attempts, blocked_until = cur.fetchone()
+
+            if blocked_until is not None and blocked_until > now:
+                retry_after = max(
+                    1,
+                    int((blocked_until - now).total_seconds()),
+                )
+                return False, retry_after
+
+            window = timedelta(seconds=window_seconds)
+            if now - window_started_at >= window:
+                window_started_at = now
+                attempts = 1
+                blocked_until = None
+            else:
+                attempts += 1
+                if attempts > limit:
+                    blocked_until = now + timedelta(
+                        seconds=block_seconds
+                    )
+
+            cur.execute(
+                """
+                UPDATE auth_rate_limits
+                SET
+                    window_started_at = %s,
+                    attempts = %s,
+                    blocked_until = %s
+                WHERE rate_key = %s
+                """,
+                (
+                    window_started_at,
+                    attempts,
+                    blocked_until,
+                    rate_key,
+                )
+            )
+        conn.commit()
+
+    if blocked_until is not None:
+        return False, max(
+            1,
+            int((blocked_until - now).total_seconds()),
+        )
+    return True, 0
+
+
+def clear_auth_rate_limit(rate_key):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM auth_rate_limits WHERE rate_key = %s",
+                (rate_key,)
+            )
         conn.commit()
 
 
@@ -625,39 +1073,32 @@ def add_report(user_id, age=None, platelets=None, ast=None, alt=None,
         conn.close()
 
 
-def signup(email, password, name, age, gender, weight, height, diabetes_status,
-           hypertension, previous_liver_disease, family_history, activity_level,
-           exercise_frequency, alcohol_consumption, smoking_status):
-    bmi = calculate_bmi(weight, height)
-
-    diabetes_status = _safe_bool(diabetes_status)
-    hypertension = _safe_bool(hypertension)
-    previous_liver_disease = _safe_bool(previous_liver_disease)
-    family_history = _safe_bool(family_history)
-
-    activity_level = normalize(activity_level)
-    exercise_frequency = normalize(exercise_frequency)
-    alcohol_consumption = normalize(alcohol_consumption)
-    smoking_status = normalize(smoking_status)
-
-    activity_level = validate_choice(activity_level, ["sedentary", "lightly active", "moderately active", "very active"])
-    exercise_frequency = validate_choice(exercise_frequency, ["never", "1-2 times per week", "2-4 times per week", "5+ times every week", "every day"])
-    alcohol_consumption = validate_choice(alcohol_consumption, ["none", "occasional", "moderate", "heavy"])
-    smoking_status = validate_choice(smoking_status, ["never", "former", "current"])
-
+def signup(email, password_hash, name, terms_accepted_at):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO users
-                   (email, password, name, age, gender, weight, height, bmi,
-                    diabetes_status, hypertension, previous_liver_disease, family_history,
-                    activity_level, exercise_frequency, alcohol_consumption, smoking_status)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                   RETURNING id""",
-                (email, password, name, age, gender, weight, height, bmi,
-                 diabetes_status, hypertension, previous_liver_disease, family_history,
-                 activity_level, exercise_frequency, alcohol_consumption, smoking_status)
+                """
+                INSERT INTO users
+                    (
+                        email,
+                        password_hash,
+                        name,
+                        terms_accepted_at,
+                        created_at,
+                        updated_at
+                    )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    email,
+                    password_hash,
+                    name,
+                    terms_accepted_at,
+                    datetime.now(timezone.utc),
+                    datetime.now(timezone.utc),
+                )
             )
             new_id = cur.fetchone()[0]
         conn.commit()
@@ -668,51 +1109,6 @@ def signup(email, password, name, age, gender, weight, height, diabetes_status,
     finally:
         conn.close()
 
-
-def login(email, password):
-    conn = get_connection()
-
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    id,
-                    password,
-                    name,
-                    email,
-                    age,
-                    gender
-                FROM users
-                WHERE email=%s
-            """, (email,))
-
-            row = cur.fetchone()
-
-    finally:
-        conn.close()
-
-    if row is None:
-        return None
-
-    (
-        user_id,
-        stored_password,
-        name,
-        email,
-        age,
-        gender
-    ) = row
-
-    if stored_password != password:
-        return None
-
-    return {
-        "user_id": user_id,
-        "full_name": name,
-        "email": email,
-        "age": age,
-        "gender": gender
-    }
 
 def update_user_profile(user_id, age, gender, weight, height, diabetes_status,
                          hypertension, previous_liver_disease, family_history,
@@ -738,14 +1134,16 @@ def update_user_profile(user_id, age, gender, weight, height, diabetes_status,
                    SET age=%s, gender=%s, weight=%s, height=%s, bmi=%s,
                        diabetes_status=%s, hypertension=%s, previous_liver_disease=%s,
                        family_history=%s, activity_level=%s, exercise_frequency=%s,
-                       alcohol_consumption=%s, smoking_status=%s
+                       alcohol_consumption=%s, smoking_status=%s, updated_at=%s
                    WHERE id=%s""",
                 (age, gender, weight, height, bmi, diabetes_status, hypertension,
                  previous_liver_disease, family_history, activity_level,
-                 exercise_frequency, alcohol_consumption, smoking_status, user_id)
+                 exercise_frequency, alcohol_consumption, smoking_status,
+                 datetime.now(timezone.utc), user_id)
             )
+            updated = cur.rowcount == 1
         conn.commit()
-        return True
+        return updated
     except psycopg2.Error as e:
         print("Profile update error:", e)
         conn.rollback()
@@ -755,6 +1153,7 @@ def update_user_profile(user_id, age, gender, weight, height, diabetes_status,
 
 
 init_db()
+init_auth_tables()
 init_reports_table()
 init_upload_history_table()
 init_report_analyses_table()

@@ -140,9 +140,52 @@ Handles user creation, login validations, and updates to the medical/lifestyle p
 
 | Method | Endpoint | Description | Expected Payload JSON |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/signup` | Registers a new user, hashes the password, calculates initial BMI, and commits user data to PostgreSQL. | `{"email": "user@test.com", "password": "123", "full_name": "John Doe", "age": 34, "gender": "Male", "weight": 70, "height": 175}` |
-| `POST` | `/login` | Validates email and password credentials. Returns user details on success. | `{"email": "user@test.com", "password": "123"}` |
-| `POST` | `/onboarding` | Updates a user's detailed medical background flags and lifestyle habits. | `{"user_id": 1, "age": 34, "gender": "Male", "weight": 70, "height": 175, "diabetes_status": false, "hypertension": false, "previous_liver_disease": false, "family_history": false, "activity_level": "moderately active", "exercise_frequency": "3-4 times per week", "alcohol_consumption": "occasional", "smoking_status": "never"}` |
+| `POST` | `/auth/signup` | Creates an account, stores an Argon2id password hash, and returns access/refresh tokens. | `{"email":"user@test.com","password":"a long passphrase","confirm_password":"a long passphrase","full_name":"John Doe","terms_accepted":true}` |
+| `POST` | `/auth/login` | Validates credentials and returns a new revocable authentication session. | `{"email":"user@test.com","password":"a long passphrase"}` |
+| `POST` | `/auth/refresh` | Rotates a refresh token and returns a replacement access/refresh pair. | `{"refresh_token":"..."}` |
+| `POST` | `/auth/logout` | Revokes the current session. Requires an access token. | `{}` |
+| `GET` | `/auth/me` | Restores the currently authenticated user. | None |
+| `POST` | `/onboarding` | Updates the authenticated user's medical background and lifestyle profile. | `{"age":34,"gender":"male","weight":70,"height":175,"diabetes_status":false,"hypertension":false,"previous_liver_disease":false,"family_history":false,"activity_level":"moderately active","exercise_frequency":"2-4 times per week","alcohol_consumption":"occasional","smoking_status":"never"}` |
+
+`/signup` and `/login` remain temporary aliases for the new `/auth/*` routes.
+Every endpoint other than signup, login, refresh, and the root health check
+requires:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+User identity comes only from the verified access token. Protected requests
+must not include `user_id`.
+
+Signup and login return this authentication shape:
+
+```json
+{
+  "success": true,
+  "user": {
+    "user_id": 7,
+    "full_name": "John Doe",
+    "email": "user@test.com",
+    "age": null,
+    "gender": null
+  },
+  "auth": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "token_type": "Bearer",
+    "expires_in": 900,
+    "access_expires_at": "2026-07-27T12:15:00+00:00",
+    "refresh_expires_at": "2026-08-26T12:00:00+00:00"
+  }
+}
+```
+
+The access token lasts 15 minutes. On a protected request returning `401`, the
+client should call `/auth/refresh` once, atomically replace both returned
+tokens, then retry the original request once. Refresh tokens are one-time-use:
+reusing an older token invalidates the user's active sessions. The client must
+clear both tokens after refresh failure or logout.
 
 ### 📂 2. File Uploads & Processing (`routes/upload.py`)
 
@@ -150,7 +193,12 @@ Accepts physical files and performs automated PDF OCR parsing or convolutional n
 
 | Method | Endpoint | Content Type | Parameters (Form Data) | Internal Logic |
 | :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/upload` | `multipart/form-data` | `file`: (PDF/Image stream)<br>`report_type`: (`lft`/`cbc`/`coagulation`/`afp`/`ultrasound`) <br>`user_id`: (Integer) | **If ultrasound**: crops image, runs MobileNetV2, predicts condition.<br>**If lab report**: runs Tesseract/PyMuPDF text extraction, extracts values using regex, computes clinical index, commits to DB. |
+| `POST` | `/upload` | `multipart/form-data` | `file`: (PDF/Image stream)<br>`report_type`: (`lft`/`cbc`/`coagulation`/`afp`/`hepatitis`/`ultrasound`) | **If ultrasound**: crops image, runs MobileNetV2, predicts condition.<br>**If lab report**: runs Tesseract/PyMuPDF text extraction and extracts values using regex. |
+| `GET` | `/recent-reports` | None | None | Returns only the authenticated user's recent uploads. |
+
+Lab reports must be valid PDF files. Ultrasounds must be valid JPEG or PNG
+images. Uploads are limited by `MAX_UPLOAD_BYTES`, saved under random temporary
+names, and deleted immediately after extraction or prediction.
 
 ### 📊 3. Clinical Indices & Generative AI (`routes/calculate.py`, `insights.py`, `report_analysis.py`)
 
@@ -158,23 +206,24 @@ Forces metric calculations or queries the Fireworks AI LLM to interpret liver pa
 
 | Method | Endpoint | Route Blueprint | Description | Expected Payload JSON |
 | :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/calculate` | `calculate.py` | Recalculates and saves latest APRI & FIB-4 scores from blood panel results. | `{"user_id": 1}` |
-| `POST` | `/insights` | `insights.py` | Interrogates Fireworks LLM for generalized fitness & lifestyle suggestions based on history. | `{"user_id": 1}` |
-| `POST` | `/report-analysis` | `report_analysis.py` | Returns deterministic health/risk values and cached AI explanations for one saved report. Pass the `report_id` returned by `/calculate` to analyze that exact upload set. | `{"user_id": 1, "report_id": 42}` |
+| `POST` | `/calculate` | `calculate.py` | Recalculates and saves latest APRI & FIB-4 scores from blood panel results. | `{"age":34}` |
+| `POST` | `/insights` | `insights.py` | Requests generalized fitness and lifestyle suggestions based on authenticated history. | `{}` |
+| `POST` | `/report-analysis` | `report_analysis.py` | Returns deterministic health/risk values and cached AI explanations for one saved report. | `{"report_id":42}` |
 
 ### 4. Dashboard (`routes/dashboard.py`)
 
 Returns the dashboard-ready health score, latest biomarker values and trends,
 structured AI insights, and the next suggested test.
 
-| Method | Endpoint | Query Parameter |
-| :--- | :--- | :--- |
-| `GET` | `/dashboard` | `user_id` (Integer) |
+| Method | Endpoint |
+| :--- | :--- |
+| `GET` | `/dashboard` |
 
 Example:
 
 ```http
-GET /dashboard?user_id=1
+GET /dashboard
+Authorization: Bearer <access_token>
 ```
 
 The response always contains every supported biomarker. When a biomarker has not
@@ -201,12 +250,11 @@ status, trend, and insight are returned as `null`.
 
 ### 6. Health Insights
 
-Call `POST /health-insights` with the same `user_id` and optional `report_id`
-used for report analysis:
+Call `POST /health-insights` with the optional `report_id` used for report
+analysis:
 
 ```json
 {
-  "user_id": 1,
   "report_id": 42
 }
 ```
@@ -228,7 +276,6 @@ Start a conversation:
 
 ```json
 {
-  "user_id": 1,
   "report_id": 42,
   "message": "Is my ALT improving?"
 }
@@ -238,7 +285,6 @@ Continue it using the returned `conversation_id`:
 
 ```json
 {
-  "user_id": 1,
   "conversation_id": "fae67f3f-bb16-4bc1-98cf-654d6018af24",
   "message": "What should I ask my doctor?"
 }
@@ -250,9 +296,7 @@ while only the most recent 12 messages are sent to the model. The model receives
 a minimized profile and only the selected report, not the user's email or full
 report history.
 
-For the current MVP, `user_id` follows the convention used by the other routes.
-It must be replaced by an authenticated server-side user identity before public
-deployment.
+The conversation and selected report must belong to the authenticated user.
 
 ---
 
@@ -291,9 +335,17 @@ Your host system must run the following dependencies to operate OCR and file loa
     pip install -r requirements.txt
     ```
 4.  **Create `.env` Configuration File**:
-    In the root directory, create a `.env` file containing:
+    Copy `.env.example` to `.env`. Generate `JWT_SECRET` with
+    `python -c "import secrets; print(secrets.token_urlsafe(48))"` and set the
+    remaining values:
     ```env
     DATABASE_URL=postgresql://neondb_owner:PASSWORD@HOST/neondb?sslmode=require
+    JWT_SECRET=
+    JWT_ISSUER=livora-api
+    JWT_AUDIENCE=livora-mobile
+    CORS_ORIGINS=http://localhost:8081,http://localhost:19006
+    APP_ENV=development
+    ENFORCE_HTTPS=0
     FIREWORKS_API_KEY=your_fireworks_api_key
     GROQ_API_KEY=your_groq_api_key
     GROQ_MODEL=llama-3.3-70b-versatile
@@ -302,7 +354,9 @@ Your host system must run the following dependencies to operate OCR and file loa
     ```bash
     python app.py
     ```
-    This will initialize the PostgreSQL tables (`users`, `reports`, `upload_history`) if they do not exist and launch the Flask server at `http://127.0.0.1:5000`.
+    This initializes the PostgreSQL user, authentication-session, rate-limit,
+    report, upload-history, analysis, and assistant tables, then launches the
+    Flask server at `http://127.0.0.1:5000`.
 
 ---
 
@@ -328,7 +382,7 @@ Stores demographics, medical history flags, and baseline lifestyle configuration
 | :--- | :--- | :--- |
 | `id` | SERIAL | PRIMARY KEY |
 | `email` | TEXT | UNIQUE, NOT NULL |
-| `password` | TEXT | NOT NULL |
+| `password_hash` | TEXT | Argon2id hash, NOT NULL |
 | `name` | TEXT | |
 | `age` | INTEGER | |
 | `gender` | TEXT | |
@@ -343,8 +397,36 @@ Stores demographics, medical history flags, and baseline lifestyle configuration
 | `exercise_frequency` | TEXT | "never" / "1-2 times per week" / ... |
 | `alcohol_consumption` | TEXT | "none" / "occasional" / ... |
 | `smoking_status` | TEXT | "never" / "former" / "current" |
+| `terms_accepted_at` | TIMESTAMPTZ | |
+| `created_at` | TIMESTAMPTZ | NOT NULL |
+| `updated_at` | TIMESTAMPTZ | NOT NULL |
 
-### 2. `reports` Table
+### 2. `auth_sessions` Table
+Stores revocable authentication sessions. Refresh tokens are never stored in
+plaintext.
+
+| Column Name | Data Type | Constraints / Defaults |
+| :--- | :--- | :--- |
+| `id` | TEXT | PRIMARY KEY |
+| `user_id` | INTEGER | REFERENCES users(id), NOT NULL |
+| `refresh_token_hash` | TEXT | SHA-256 hash, NOT NULL |
+| `created_at` | TIMESTAMPTZ | NOT NULL |
+| `expires_at` | TIMESTAMPTZ | NOT NULL |
+| `last_used_at` | TIMESTAMPTZ | |
+| `revoked_at` | TIMESTAMPTZ | |
+
+### 3. `auth_rate_limits` Table
+Stores server-side counters used to throttle signup, login, and refresh
+attempts. The keys are one-way hashes of the rate-limit scope.
+
+| Column Name | Data Type | Constraints / Defaults |
+| :--- | :--- | :--- |
+| `rate_key` | TEXT | PRIMARY KEY |
+| `window_started_at` | TIMESTAMPTZ | NOT NULL |
+| `attempts` | INTEGER | NOT NULL |
+| `blocked_until` | TIMESTAMPTZ | |
+
+### 4. `reports` Table
 Stores chronological values extracted from PDFs and ultrasound predictions.
 
 | Column Name | Data Type | Constraints / Defaults |
@@ -368,7 +450,7 @@ Stores chronological values extracted from PDFs and ultrasound predictions.
 | `ultrasound_prediction` | TEXT | Prediction outcome: HCC / Hemangioma / Normal |
 | `date_added` | TEXT | Formatted creation timestamp, NOT NULL |
 
-### 3. `upload_history` Table
+### 5. `upload_history` Table
 Logs uploaded file actions.
 
 | Column Name | Data Type | Constraints / Defaults |

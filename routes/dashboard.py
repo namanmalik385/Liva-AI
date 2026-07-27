@@ -1,23 +1,17 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify
 
 from services.dashboard_service import build_dashboard
+from services.auth_service import auth_required, current_user_id
 
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
 
 @dashboard_bp.route("/dashboard", methods=["GET"])
+@auth_required
 def dashboard():
-    user_id = request.args.get("user_id", type=int)
-
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "error": "user_id is required",
-        }), 400
-
     try:
-        dashboard_data = build_dashboard(user_id)
+        dashboard_data = build_dashboard(current_user_id())
     except Exception:
         return jsonify({
             "success": False,
