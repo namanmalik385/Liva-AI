@@ -12,6 +12,7 @@ PROTECTED_ROUTE_FUNCTIONS = {
     "routes/report_analysis.py": {"report_analysis"},
     "routes/health_insights.py": {"health_insights"},
     "routes/chatbot.py": {"assistant_chat"},
+    "routes/timeline.py": {"timeline"},
 }
 
 

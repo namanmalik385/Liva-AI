@@ -506,6 +506,7 @@ def init_reports_table():
                 platelets REAL,
                 ast REAL,
                 alt REAL,
+                ggt REAL,
                 bilirubin REAL,
                 albumin REAL,
                 inr REAL,
@@ -520,6 +521,9 @@ def init_reports_table():
                 date_added TEXT NOT NULL
             )
             """)
+            cur.execute(
+                "ALTER TABLE reports ADD COLUMN IF NOT EXISTS ggt REAL"
+            )
         conn.commit()
 
 
@@ -810,6 +814,91 @@ def get_dashboard_records(user_id):
         conn.close()
 
 
+def get_timeline_records(user_id):
+    """Return a profile and complete dated report history for timeline charts."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    name,
+                    age,
+                    gender,
+                    weight,
+                    height,
+                    bmi,
+                    diabetes_status,
+                    hypertension,
+                    previous_liver_disease,
+                    family_history,
+                    activity_level,
+                    exercise_frequency,
+                    alcohol_consumption,
+                    smoking_status
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            user_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    ast,
+                    alt,
+                    ggt,
+                    bilirubin,
+                    albumin,
+                    platelets,
+                    inr,
+                    pt,
+                    afp,
+                    hbsag,
+                    anti_hcv,
+                    apri,
+                    fib4,
+                    ultrasound_prediction,
+                    date_added
+                FROM reports
+                WHERE user_id = %s
+                ORDER BY date_added ASC, id ASC
+                """,
+                (user_id,),
+            )
+            columns = (
+                "id",
+                "ast",
+                "alt",
+                "ggt",
+                "bilirubin",
+                "albumin",
+                "platelets",
+                "inr",
+                "pt",
+                "afp",
+                "hbsag",
+                "anti_hcv",
+                "apri",
+                "fib4",
+                "ultrasound_prediction",
+                "date_added",
+            )
+            reports = [
+                dict(zip(columns, row))
+                for row in cur.fetchall()
+            ]
+
+        return {
+            "user": user_row,
+            "reports": reports,
+        }
+    finally:
+        conn.close()
+
+
 def get_report_analysis_records(user_id, report_id=None):
     """Return a user and one current/previous report pair for analysis."""
     conn = get_connection()
@@ -1026,7 +1115,7 @@ def validate_choice(value, allowed):
     return value if value in allowed else None
 
 
-def add_report(user_id, age=None, platelets=None, ast=None, alt=None,
+def add_report(user_id, age=None, platelets=None, ast=None, alt=None, ggt=None,
                bilirubin=None, albumin=None, inr=None, pt=None,
                afp=None, hbsag=None, anti_hcv=None, ast_uln=40,
                apri=None, fib4=None, ultrasound_prediction=None):
@@ -1036,6 +1125,7 @@ def add_report(user_id, age=None, platelets=None, ast=None, alt=None,
     platelets = _safe_float(platelets)
     ast = _safe_float(ast)
     alt = _safe_float(alt)
+    ggt = _safe_float(ggt)
     bilirubin = _safe_float(bilirubin)
     albumin = _safe_float(albumin)
     inr = _safe_float(inr)
@@ -1053,12 +1143,12 @@ def add_report(user_id, age=None, platelets=None, ast=None, alt=None,
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO reports
-                   (user_id, age, platelets, ast, alt, bilirubin, albumin,
+                   (user_id, age, platelets, ast, alt, ggt, bilirubin, albumin,
                     inr, pt, afp, hbsag, anti_hcv, ast_uln, apri, fib4,
                     ultrasound_prediction, date_added)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    RETURNING id""",
-                (user_id, age, platelets, ast, alt, bilirubin, albumin,
+                (user_id, age, platelets, ast, alt, ggt, bilirubin, albumin,
                  inr, pt, afp, hbsag, anti_hcv, ast_uln, apri, fib4,
                  ultrasound_prediction, date_added)
             )

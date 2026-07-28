@@ -30,6 +30,14 @@ def parse_lft(text):
         text
     )
 
+    result["ggt"] = extract_numeric(
+        (
+            r"(?:GAMMA[\s-]*GLUTAMYL\s+TRANSFERASE"
+            r"(?:\s*\(GGT\))?|GGT)\s*[:\-]?\s*([\d.]+)"
+        ),
+        text
+    )
+
     result["albumin"] = extract_numeric(
         r"SERUM\s+ALBUMIN\s+([\d.]+)",
         text

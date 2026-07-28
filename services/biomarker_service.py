@@ -20,6 +20,7 @@ METRIC_ORDER = (
     "apri",
     "ast",
     "alt",
+    "ggt",
     "bilirubin",
     "albumin",
     "platelets",
@@ -36,6 +37,7 @@ METRIC_LABELS = {
     "apri": "APRI",
     "ast": "AST",
     "alt": "ALT",
+    "ggt": "GGT",
     "bilirubin": "Bilirubin",
     "albumin": "Albumin",
     "platelets": "Platelets",
@@ -52,6 +54,7 @@ METRIC_UNITS = {
     "apri": None,
     "ast": "U/L",
     "alt": "U/L",
+    "ggt": "U/L",
     "bilirubin": "mg/dL",
     "albumin": "g/dL",
     "platelets": "10^9/L",
@@ -92,7 +95,7 @@ def metric_status(metric, value):
             return "borderline"
         return "elevated"
 
-    if metric in ("ast", "alt"):
+    if metric in ("ast", "alt", "ggt"):
         return "normal" if value <= 40 else "elevated"
 
     if metric == "bilirubin":
