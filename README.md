@@ -16,6 +16,9 @@
 > 1. **This repository contains the backend code.**
 > 2. The frontend mobile application repository can be found at **[Frontend Repository](https://github.com/ishaqashraf/levora-ai)** 
 
+The current frontend integration contract is documented in
+[`docs/FRONTEND_API_REFERENCE.md`](docs/FRONTEND_API_REFERENCE.md).
+
 ---
 
 ## 📖 Table of Contents

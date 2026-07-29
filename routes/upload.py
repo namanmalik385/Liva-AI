@@ -9,7 +9,6 @@ from parsers.cbc_parser import parse_cbc
 from parsers.coagulation_parser import parse_coagulation
 from parsers.afp_parser import parse_afp
 from parsers.hepatitis_parser import parse_hepatitis
-from services.ultrasound_model import predict_liver_condition
 
 from models.patient_data import get_patient_data
 
@@ -114,7 +113,7 @@ def upload_file():
         file.save(filepath)
 
         if report_type == "ultrasound":
-
+            from services.ultrasound_model import predict_liver_condition
             result = predict_liver_condition(filepath)
 
             patient_data["ultrasound_prediction"] = result
