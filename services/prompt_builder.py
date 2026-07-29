@@ -66,6 +66,7 @@ def calculate_health_score(user_row, latest_report=None):
         (
             ast,
             alt,
+            ggt,
             bilirubin,
             albumin,
             platelets,
@@ -198,7 +199,7 @@ def build_llm_prompt(user_id):
             user_row = cur.fetchone()
 
             cur.execute(
-                """SELECT ast, alt, bilirubin, albumin, platelets, inr, pt,
+                """SELECT ast, alt, ggt, bilirubin, albumin, platelets, inr, pt,
                     afp, hbsag, anti_hcv, apri, fib4, ultrasound_prediction, date_added
                 FROM reports WHERE user_id=%s ORDER BY date_added ASC, id ASC""",
                 (user_id,)
@@ -266,11 +267,12 @@ def build_llm_prompt(user_id):
         prompt += "BIOMARKER_DATA_AVAILABLE: YES\n\n"
 
         for row in report_rows:
-            (ast, alt, bilirubin, albumin, platelets, inr, pt,
+            (ast, alt, ggt, bilirubin, albumin, platelets, inr, pt,
             afp, hbsag, anti_hcv, apri, fib4, ultrasound_prediction, date_added) = row
 
             line = (
                 f"- {date_added} | AST: {fmt(ast)} U/L, ALT: {fmt(alt)} U/L, "
+                f"GGT: {fmt(ggt)} U/L, "
                 f"Bilirubin: {fmt(bilirubin)} mg/dL, Albumin: {fmt(albumin)} g/dL, "
                 f"Platelets: {fmt(platelets)}, INR: {fmt(inr)}, PT: {fmt(pt)}, "
                 f"AFP: {fmt(afp)}, HBsAg: {fmt(hbsag)}, Anti-HCV: {fmt(anti_hcv)}, "
@@ -357,6 +359,7 @@ AND
 Consider:
 - AST
 - ALT
+- GGT
 - Bilirubin
 - Albumin
 - INR

@@ -13,7 +13,7 @@ from services.biomarker_service import (
 from services.prompt_builder import calculate_health_score
 
 
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 
 
 class ReportNotFoundError(Exception):

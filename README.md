@@ -193,6 +193,7 @@ Accepts physical files and performs automated PDF OCR parsing or convolutional n
 
 | Method | Endpoint | Content Type | Parameters (Form Data) | Internal Logic |
 | :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/report-batches` | `multipart/form-data` | Repeated `files` and matching repeated `report_types`; requires an `Idempotency-Key` UUID header. | Processes up to six different report types, merges extracted biomarkers, independently calculates FIB-4/APRI, and atomically saves one report snapshot. |
 | `POST` | `/upload` | `multipart/form-data` | `file`: (PDF/Image stream)<br>`report_type`: (`lft`/`cbc`/`coagulation`/`afp`/`hepatitis`/`ultrasound`) | **If ultrasound**: crops image, runs MobileNetV2, predicts condition.<br>**If lab report**: runs Tesseract/PyMuPDF text extraction and extracts values using regex. |
 | `GET` | `/recent-reports` | None | None | Returns only the authenticated user's recent uploads. |
 
@@ -200,13 +201,21 @@ Lab reports must be valid PDF files. Ultrasounds must be valid JPEG or PNG
 images. Uploads are limited by `MAX_UPLOAD_BYTES`, saved under random temporary
 names, and deleted immediately after extraction or prediction.
 
+`/report-batches` is the preferred MVP upload API. Append each `files` field and
+its `report_types` field in the same order. Only one file per report type is
+accepted in a batch. Age comes from onboarding, and the authenticated user ID
+comes from the access token. Retrying with the same `Idempotency-Key` returns
+the original completed response rather than creating a duplicate report.
+`/upload` and `/calculate` remain temporary legacy routes during frontend
+migration.
+
 ### 📊 3. Clinical Indices & Generative AI (`routes/calculate.py`, `insights.py`, `report_analysis.py`)
 
 Forces metric calculations or queries the Fireworks AI LLM to interpret liver panels.
 
 | Method | Endpoint | Route Blueprint | Description | Expected Payload JSON |
 | :--- | :--- | :--- | :--- | :--- |
-| `POST` | `/calculate` | `calculate.py` | Recalculates and saves latest APRI & FIB-4 scores from blood panel results. | `{"age":34}` |
+| `POST` | `/calculate` | `calculate.py` | Temporary legacy route for the old two-request upload flow. | `{"age":34}` |
 | `POST` | `/insights` | `insights.py` | Requests generalized fitness and lifestyle suggestions based on authenticated history. | `{}` |
 | `POST` | `/report-analysis` | `report_analysis.py` | Returns deterministic health/risk values and cached AI explanations for one saved report. | `{"report_id":42}` |
 
@@ -236,7 +245,8 @@ Unchanged trends are returned as an empty string. Insight statuses are `normal`,
 
 ### 5. AI Report Analysis
 
-Call `POST /report-analysis` after `/calculate` saves the current upload set.
+Call `POST /report-analysis` with the `report_id` returned by
+`POST /report-batches`.
 The endpoint returns the health score and trend, a numeric slider-ready risk
 level, every supported biomarker with its current value/status/trend/insight,
 and an AI summary. Biomarker values always come from the selected current
@@ -297,6 +307,68 @@ a minimized profile and only the selected report, not the user's email or full
 report history.
 
 The conversation and selected report must belong to the authenticated user.
+
+### 8. Health Timeline
+
+Call the protected timeline endpoint with one supported period:
+
+```http
+GET /timeline?period=weekly
+GET /timeline?period=monthly
+GET /timeline?period=yearly
+Authorization: Bearer <access_token>
+```
+
+The headline `health_score` is the best score recorded in the current selected
+period. `health_trend`, `trend_summary`, chart history, and biomarker trends use
+the latest report in the current period compared with the latest report in the
+immediately preceding calendar period.
+
+Weekly history contains the current week and previous three weeks. Monthly
+history contains January through December of the current year. Yearly history
+contains every year with saved report data. History is returned as an ordered
+array. Missing values and unavailable comparisons are returned as `null`, while
+unchanged comparable values use `"stable"`.
+
+### 9. Profile Summary
+
+Call the protected profile endpoint without a request body:
+
+```http
+GET /profile
+Authorization: Bearer <access_token>
+```
+
+The response contains the authenticated user's full name, age, gender, latest
+health score, total uploaded-file count, liver-health status, biomarker status,
+and the month/year of the latest saved report. The upload count comes from
+`upload_history`, so each uploaded file counts once.
+
+Liver-health statuses are `Healthy`, `Needs Improvement`, `At Risk`, and
+`Critical`. Biomarker statuses are `Stable`, `Monitor`, and `Critical`. When no
+biomarker report is available, the profile returns the onboarding-based health
+score and `Monitor` for biomarker status.
+
+To update personal information, send one or more supported fields:
+
+```http
+PATCH /profile
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "full_name": "Updated Name",
+  "age": 36,
+  "gender": "other"
+}
+```
+
+Updates are partial, so omitted fields remain unchanged. The only accepted
+fields are `full_name`, `age`, and `gender`. Age must be a whole number from 13
+through 120, and gender must be `male`, `female`, or `other`. A successful
+response returns the refreshed full profile summary.
 
 ---
 
@@ -437,6 +509,7 @@ Stores chronological values extracted from PDFs and ultrasound predictions.
 | `platelets` | REAL | Blood platelet count ($10^9/\text{L}$) |
 | `ast` | REAL | Aspartate Aminotransferase (U/L) |
 | `alt` | REAL | Alanine Aminotransferase (U/L) |
+| `ggt` | REAL | Gamma-glutamyl transferase (U/L) |
 | `bilirubin` | REAL | Total Bilirubin (mg/dL) |
 | `albumin` | REAL | Albumin (g/dL) |
 | `inr` | REAL | International Normalized Ratio (Coagulation) |
@@ -449,6 +522,7 @@ Stores chronological values extracted from PDFs and ultrasound predictions.
 | `fib4` | REAL | Calculated FIB-4 Index |
 | `ultrasound_prediction` | TEXT | Prediction outcome: HCC / Hemangioma / Normal |
 | `date_added` | TEXT | Formatted creation timestamp, NOT NULL |
+| `batch_id` | TEXT | Unique reference to report_batches for batch-created reports |
 
 ### 5. `upload_history` Table
 Logs uploaded file actions.
@@ -459,3 +533,12 @@ Logs uploaded file actions.
 | `user_id` | INTEGER | REFERENCES users(id), NOT NULL |
 | `report_type` | TEXT | e.g. "lft", "cbc", "ultrasound", ... |
 | `date_uploaded` | TEXT | Formatted timestamp, NOT NULL |
+| `batch_id` | TEXT | Optional reference to report_batches |
+
+### 6. `report_batches` and `report_batch_files` Tables
+
+`report_batches` stores one authenticated, idempotent multi-file upload
+operation and its final response. `report_batch_files` stores per-file
+processing outcomes and normalized extracted data. A completed batch references
+exactly one final row in `reports`; failed batches never create a report row or
+upload-history entries.

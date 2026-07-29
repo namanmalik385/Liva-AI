@@ -34,6 +34,7 @@ def _report_tuple(report):
     return (
         report.get("ast"),
         report.get("alt"),
+        report.get("ggt"),
         report.get("bilirubin"),
         report.get("albumin"),
         report.get("platelets"),
@@ -130,14 +131,6 @@ def _display_periods(period, today, report_dates):
     ]
 
 
-def _latest_metric(reports, metric):
-    for report in reversed(reports):
-        value = report.get(metric)
-        if value is not None:
-            return value
-    return None
-
-
 def _best_score(user_row, reports):
     if not reports:
         return None
@@ -147,11 +140,19 @@ def _best_score(user_row, reports):
     )
 
 
+def _latest_score(user_row, reports):
+    if not reports:
+        return None
+    return calculate_health_score(user_row, _report_tuple(reports[-1]))
+
+
 def _period_snapshot(user_row, reports):
+    latest_report = reports[-1] if reports else {}
     return {
-        "health_score": _best_score(user_row, reports),
+        "best_health_score": _best_score(user_row, reports),
+        "latest_health_score": _latest_score(user_row, reports),
         "metrics": {
-            metric: _latest_metric(reports, metric)
+            metric: latest_report.get(metric)
             for metric in ALL_TIMELINE_METRICS
         },
     }
@@ -192,37 +193,97 @@ def _trend_text(current_score, previous_score, period):
     return summary, None
 
 
-def _trend_sub_summary(current_metrics, score_change):
-    statuses = [
-        metric_status(metric, value)
+STATUS_SEVERITY = {
+    "normal": 0,
+    "negative": 0,
+    "borderline": 1,
+    "low": 2,
+    "elevated": 2,
+    "positive": 2,
+    "abnormal": 2,
+}
+
+
+def _metric_movement(metric, current, previous):
+    if current is None or previous is None:
+        return None
+    if current == previous:
+        return "stable"
+
+    current_status = metric_status(metric, current)
+    previous_status = metric_status(metric, previous)
+    current_severity = STATUS_SEVERITY.get(current_status)
+    previous_severity = STATUS_SEVERITY.get(previous_status)
+
+    if (
+        current_severity is not None
+        and previous_severity is not None
+        and current_severity != previous_severity
+    ):
+        return (
+            "improved"
+            if current_severity < previous_severity
+            else "worsened"
+        )
+
+    if current_status in ("normal", "negative"):
+        return "stable"
+    if metric in CATEGORICAL_METRICS:
+        return "stable"
+
+    if current_status == "low":
+        return "improved" if current > previous else "worsened"
+
+    return "improved" if current < previous else "worsened"
+
+
+def _trend_sub_summary(current_metrics, previous_metrics):
+    available = [
+        metric
         for metric, value in current_metrics.items()
         if value is not None
     ]
-    concerning = {
-        "borderline",
-        "elevated",
-        "low",
-        "positive",
-        "abnormal",
-    }
-    has_concerning = any(status in concerning for status in statuses)
-
-    if not statuses:
+    if not available:
         return "No biomarker values are available for this period."
-    if score_change is None:
+
+    movements = [
+        _metric_movement(
+            metric,
+            current_metrics[metric],
+            previous_metrics.get(metric),
+        )
+        for metric in available
+    ]
+    comparable = [movement for movement in movements if movement is not None]
+    if not comparable:
         return (
             "Current biomarkers are available, but prior data is insufficient "
             "for comparison."
         )
-    if score_change == 0 and not has_concerning:
+
+    improved = comparable.count("improved")
+    worsened = comparable.count("worsened")
+    concerning = sum(
+        metric_status(metric, current_metrics[metric])
+        in {"borderline", "elevated", "low", "positive", "abnormal"}
+        for metric in available
+    )
+
+    if worsened == 0 and improved == 0 and concerning == 0:
         return "Biomarkers remain stable and within expected ranges."
-    if score_change < 0 and has_concerning:
+    if worsened >= 2 and worsened > improved and concerning >= 2:
+        return "Biomarkers have significantly declined and need monitoring."
+    if worsened > improved and concerning:
         return "Biomarkers have declined and some results need monitoring."
-    if score_change < 0:
+    if worsened > improved:
         return "Biomarkers have declined but remain within expected ranges."
-    if has_concerning:
+    if improved > worsened and concerning:
         return "Overall trend improved, though some biomarkers need monitoring."
-    return "Biomarkers are improving and remain within expected ranges."
+    if improved > worsened:
+        return "Biomarkers are improving and remain within expected ranges."
+    if concerning:
+        return "Biomarkers are mixed and some results need monitoring."
+    return "Biomarker changes are mixed but remain within expected ranges."
 
 
 def build_timeline(user_id, period, now=None):
@@ -270,7 +331,7 @@ def build_timeline(user_id, period, now=None):
                 for name, value in period_data.items()
                 if name != "key"
             },
-            "health_score": snapshot["health_score"],
+            "health_score": snapshot["latest_health_score"],
             "biomarkers": {
                 metric: {
                     "value": snapshot["metrics"][metric],
@@ -293,31 +354,26 @@ def build_timeline(user_id, period, now=None):
         _previous_key(period, current_key),
         _period_snapshot(user_row, []),
     )
-    score_change = (
-        current["health_score"] - previous["health_score"]
-        if (
-            current["health_score"] is not None
-            and previous["health_score"] is not None
-        )
-        else None
-    )
     summary, default_sub_summary = _trend_text(
-        current["health_score"],
-        previous["health_score"],
+        current["latest_health_score"],
+        previous["latest_health_score"],
         period,
     )
 
     return {
         "selected_period": period,
-        "health_score": current["health_score"],
+        "health_score": current["best_health_score"],
         "health_trend": _format_percent_change(
-            current["health_score"],
-            previous["health_score"],
+            current["latest_health_score"],
+            previous["latest_health_score"],
         ),
         "trend_summary": summary,
         "trend_sub_summary": (
             default_sub_summary
-            or _trend_sub_summary(current["metrics"], score_change)
+            or _trend_sub_summary(
+                current["metrics"],
+                previous["metrics"],
+            )
         ),
         "biomarkers": {
             metric: {

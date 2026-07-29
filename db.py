@@ -541,6 +541,71 @@ def init_upload_history_table():
         conn.commit()
 
 
+def init_report_batch_tables():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS report_batches (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (status IN ('processing', 'completed', 'failed')),
+                file_count INTEGER NOT NULL,
+                report_id INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+                response_json JSONB,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                completed_at TIMESTAMPTZ,
+                UNIQUE (user_id, idempotency_key)
+            )
+            """)
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS report_batch_files (
+                id SERIAL PRIMARY KEY,
+                batch_id TEXT NOT NULL
+                    REFERENCES report_batches(id) ON DELETE CASCADE,
+                file_index INTEGER NOT NULL,
+                report_type TEXT NOT NULL,
+                processing_status TEXT NOT NULL
+                    CHECK (processing_status IN ('processed', 'failed')),
+                extracted_data JSONB,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (batch_id, file_index)
+            )
+            """)
+            cur.execute(
+                """
+                ALTER TABLE reports
+                ADD COLUMN IF NOT EXISTS batch_id TEXT
+                REFERENCES report_batches(id) ON DELETE SET NULL
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS reports_batch_unique
+                ON reports (batch_id)
+                WHERE batch_id IS NOT NULL
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE upload_history
+                ADD COLUMN IF NOT EXISTS batch_id TEXT
+                REFERENCES report_batches(id) ON DELETE SET NULL
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS report_batches_user_created_idx
+                ON report_batches (user_id, created_at DESC)
+                """
+            )
+        conn.commit()
+
+
 def init_report_analyses_table():
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -737,6 +802,276 @@ def get_recent_reports(user_id, limit=3):
         conn.close()
 
 
+def create_or_get_report_batch(
+    batch_id,
+    user_id,
+    idempotency_key,
+    file_count,
+):
+    """Create a processing batch or return the existing idempotent request."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO report_batches
+                    (
+                        id,
+                        user_id,
+                        idempotency_key,
+                        status,
+                        file_count
+                    )
+                VALUES (%s, %s, %s, 'processing', %s)
+                ON CONFLICT (user_id, idempotency_key) DO NOTHING
+                RETURNING
+                    id,
+                    status,
+                    report_id,
+                    response_json,
+                    error_message,
+                    file_count
+                """,
+                (
+                    batch_id,
+                    user_id,
+                    idempotency_key,
+                    file_count,
+                ),
+            )
+            row = cur.fetchone()
+            created = row is not None
+
+            if row is None:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        status,
+                        report_id,
+                        response_json,
+                        error_message,
+                        file_count
+                    FROM report_batches
+                    WHERE user_id = %s AND idempotency_key = %s
+                    """,
+                    (user_id, idempotency_key),
+                )
+                row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        raise RuntimeError("Could not create or retrieve report batch")
+    return {
+        "created": created,
+        "batch_id": row[0],
+        "status": row[1],
+        "report_id": row[2],
+        "response": row[3],
+        "error_message": row[4],
+        "file_count": row[5],
+    }
+
+
+def mark_report_batch_failed(
+    batch_id,
+    user_id,
+    error_message,
+    file_results=None,
+):
+    """Persist a safe batch failure and any completed per-file results."""
+    file_results = file_results or []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for item in file_results:
+                cur.execute(
+                    """
+                    INSERT INTO report_batch_files
+                        (
+                            batch_id,
+                            file_index,
+                            report_type,
+                            processing_status,
+                            extracted_data,
+                            error_message
+                        )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (batch_id, file_index)
+                    DO UPDATE SET
+                        processing_status = EXCLUDED.processing_status,
+                        extracted_data = EXCLUDED.extracted_data,
+                        error_message = EXCLUDED.error_message
+                    """,
+                    (
+                        batch_id,
+                        item["file_index"],
+                        item["report_type"],
+                        item.get("status", "failed"),
+                        Json(item.get("extracted_data", {})),
+                        item.get("error"),
+                    ),
+                )
+            cur.execute(
+                """
+                UPDATE report_batches
+                SET
+                    status = 'failed',
+                    error_message = %s,
+                    completed_at = %s
+                WHERE id = %s
+                  AND user_id = %s
+                  AND status = 'processing'
+                """,
+                (
+                    str(error_message)[:500],
+                    datetime.now(timezone.utc),
+                    batch_id,
+                    user_id,
+                ),
+            )
+        conn.commit()
+
+
+def complete_report_batch(
+    batch_id,
+    user_id,
+    age,
+    report_data,
+    file_results,
+    response_payload,
+):
+    """Atomically save one report snapshot and complete its upload batch."""
+    now = datetime.now(timezone.utc)
+    date_added = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status
+                FROM report_batches
+                WHERE id = %s AND user_id = %s
+                FOR UPDATE
+                """,
+                (batch_id, user_id),
+            )
+            row = cur.fetchone()
+            if row is None or row[0] != "processing":
+                raise RuntimeError("Report batch is not available for completion")
+
+            cur.execute(
+                """
+                INSERT INTO reports
+                    (
+                        user_id,
+                        age,
+                        platelets,
+                        ast,
+                        alt,
+                        ggt,
+                        bilirubin,
+                        albumin,
+                        inr,
+                        pt,
+                        afp,
+                        hbsag,
+                        anti_hcv,
+                        ast_uln,
+                        apri,
+                        fib4,
+                        ultrasound_prediction,
+                        date_added,
+                        batch_id
+                    )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    age,
+                    report_data.get("platelets"),
+                    report_data.get("ast"),
+                    report_data.get("alt"),
+                    report_data.get("ggt"),
+                    report_data.get("bilirubin"),
+                    report_data.get("albumin"),
+                    report_data.get("inr"),
+                    report_data.get("pt"),
+                    report_data.get("afp"),
+                    report_data.get("hbsag"),
+                    report_data.get("anti_hcv"),
+                    report_data.get("ast_uln"),
+                    report_data.get("apri"),
+                    report_data.get("fib4"),
+                    report_data.get("ultrasound_prediction"),
+                    date_added,
+                    batch_id,
+                ),
+            )
+            report_id = cur.fetchone()[0]
+
+            for item in file_results:
+                cur.execute(
+                    """
+                    INSERT INTO report_batch_files
+                        (
+                            batch_id,
+                            file_index,
+                            report_type,
+                            processing_status,
+                            extracted_data,
+                            error_message
+                        )
+                    VALUES (%s, %s, %s, 'processed', %s, NULL)
+                    """,
+                    (
+                        batch_id,
+                        item["file_index"],
+                        item["report_type"],
+                        Json(item.get("extracted_data", {})),
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO upload_history
+                        (user_id, report_type, date_uploaded, batch_id)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        item["report_type"],
+                        date_added,
+                        batch_id,
+                    ),
+                )
+
+            response_payload["report"]["report_id"] = report_id
+            cur.execute(
+                """
+                UPDATE report_batches
+                SET
+                    status = 'completed',
+                    report_id = %s,
+                    response_json = %s,
+                    error_message = NULL,
+                    completed_at = %s
+                WHERE id = %s AND user_id = %s
+                """,
+                (
+                    report_id,
+                    Json(response_payload),
+                    now,
+                    batch_id,
+                    user_id,
+                ),
+            )
+        conn.commit()
+
+    return response_payload
+
+
 def get_dashboard_records(user_id):
     """Return the profile, report history, and latest upload per report type."""
     conn = get_connection()
@@ -771,6 +1106,7 @@ def get_dashboard_records(user_id):
                 SELECT
                     ast,
                     alt,
+                    ggt,
                     bilirubin,
                     albumin,
                     platelets,
@@ -809,6 +1145,82 @@ def get_dashboard_records(user_id):
                 report_type: date_uploaded
                 for report_type, date_uploaded in upload_rows
             }
+        }
+    finally:
+        conn.close()
+
+
+def get_profile_summary_records(user_id):
+    """Return the authenticated profile, latest report, and upload count."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    name,
+                    age,
+                    gender,
+                    weight,
+                    height,
+                    bmi,
+                    diabetes_status,
+                    hypertension,
+                    previous_liver_disease,
+                    family_history,
+                    activity_level,
+                    exercise_frequency,
+                    alcohol_consumption,
+                    smoking_status
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            user_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                    ast,
+                    alt,
+                    ggt,
+                    bilirubin,
+                    albumin,
+                    platelets,
+                    inr,
+                    pt,
+                    afp,
+                    hbsag,
+                    anti_hcv,
+                    apri,
+                    fib4,
+                    ultrasound_prediction,
+                    date_added
+                FROM reports
+                WHERE user_id = %s
+                ORDER BY date_added DESC, id DESC
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            latest_report = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT COUNT(*), MAX(date_uploaded)
+                FROM upload_history
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            upload_count, latest_upload_date = cur.fetchone()
+
+        return {
+            "user": user_row,
+            "latest_report": latest_report,
+            "total_uploaded_reports": upload_count,
+            "latest_upload_date": latest_upload_date,
         }
     finally:
         conn.close()
@@ -939,6 +1351,7 @@ def get_report_analysis_records(user_id, report_id=None):
                 id,
                 ast,
                 alt,
+                ggt,
                 bilirubin,
                 albumin,
                 platelets,
@@ -1030,6 +1443,44 @@ def get_user_profile_record(user_id):
             return cur.fetchone()
     finally:
         conn.close()
+
+
+def update_user_personal_info(user_id, updates):
+    """Update an allowlisted subset of personal profile fields."""
+    column_names = {
+        "full_name": "name",
+        "age": "age",
+        "gender": "gender",
+    }
+    assignments = [
+        f"{column_names[field]} = %s"
+        for field in updates
+    ]
+    values = [updates[field] for field in updates]
+    assignments.append("updated_at = %s")
+    values.extend((datetime.now(timezone.utc), user_id))
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE users
+                SET {", ".join(assignments)}
+                WHERE id = %s
+                RETURNING name, age, gender
+                """,
+                values,
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    if row is None:
+        return None
+    return {
+        "full_name": row[0],
+        "age": row[1],
+        "gender": row[2],
+    }
 
 
 def get_cached_report_analysis(report_id, analysis_version):
@@ -1246,5 +1697,6 @@ init_db()
 init_auth_tables()
 init_reports_table()
 init_upload_history_table()
+init_report_batch_tables()
 init_report_analyses_table()
 init_assistant_tables()

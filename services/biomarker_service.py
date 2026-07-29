@@ -1,6 +1,7 @@
 REPORT_FIELDS = (
     "ast",
     "alt",
+    "ggt",
     "bilirubin",
     "albumin",
     "platelets",
