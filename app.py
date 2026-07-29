@@ -19,6 +19,7 @@ from routes.chatbot import chatbot_bp
 from routes.timeline import timeline_bp
 from routes.profile import profile_bp
 from routes.report_batches import report_batches_bp
+from routes.support import support_bp
 from services.auth_service import validate_auth_configuration
 
 app = Flask(__name__)
@@ -117,6 +118,7 @@ app.register_blueprint(chatbot_bp)
 app.register_blueprint(timeline_bp)
 app.register_blueprint(profile_bp)
 app.register_blueprint(report_batches_bp)
+app.register_blueprint(support_bp)
 
 @app.route("/", methods=["GET"])
 def home():

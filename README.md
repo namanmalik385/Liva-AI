@@ -370,6 +370,30 @@ fields are `full_name`, `age`, and `gender`. Age must be a whole number from 13
 through 120, and gender must be `male`, `female`, or `other`. A successful
 response returns the refreshed full profile summary.
 
+### 10. Help and Support
+
+Submit an authenticated support request:
+
+```http
+POST /help-support
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "subject": "Report Upload Query",
+  "description": "My coagulation report is not being accepted."
+}
+```
+
+Accepted subjects are `Application Issue`, `Report Upload Query`,
+`AI Health Assessment Explanation`, and `Other Support Query`. The
+`description` field is preferred; `message` is accepted as an alias, but the
+client must not send both. Descriptions must contain non-whitespace text and
+may contain up to 4000 characters. A successful request returns `201` with the
+ticket ID, canonical subject, `open` status, and creation timestamp.
+
 ---
 
 ## ⚙️ System Prerequisites
@@ -542,3 +566,10 @@ operation and its final response. `report_batch_files` stores per-file
 processing outcomes and normalized extracted data. A completed batch references
 exactly one final row in `reports`; failed batches never create a report row or
 upload-history entries.
+
+### 7. `support_tickets` Table
+
+Stores authenticated help-and-support submissions. Each ticket references the
+submitting user, stores one supported subject and the supplied description,
+and starts with an `open` status. Supported lifecycle statuses are `open`,
+`in_progress`, `resolved`, and `closed`.

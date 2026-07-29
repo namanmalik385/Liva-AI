@@ -649,6 +649,69 @@ def init_assistant_tables():
         conn.commit()
 
 
+def init_support_tickets_table():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                subject TEXT NOT NULL CHECK (
+                    subject IN (
+                        'Application Issue',
+                        'Report Upload Query',
+                        'AI Health Assessment Explanation',
+                        'Other Support Query'
+                    )
+                ),
+                description TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (
+                    status IN (
+                        'open',
+                        'in_progress',
+                        'resolved',
+                        'closed'
+                    )
+                ),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """)
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS support_tickets_user_created_idx
+            ON support_tickets (user_id, created_at DESC)
+            """)
+            cur.execute("""
+            CREATE INDEX IF NOT EXISTS support_tickets_status_created_idx
+            ON support_tickets (status, created_at ASC)
+            """)
+        conn.commit()
+
+
+def create_support_ticket(user_id, subject, description):
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO support_tickets
+                    (user_id, subject, description)
+                VALUES (%s, %s, %s)
+                RETURNING id, subject, status, created_at
+                """,
+                (user_id, subject, description)
+            )
+            row = cur.fetchone()
+        conn.commit()
+
+    return {
+        "ticket_id": row[0],
+        "subject": row[1],
+        "status": row[2],
+        "created_at": row[3],
+    }
+
+
 def create_assistant_conversation_with_exchange(
     conversation_id,
     user_id,
@@ -1700,3 +1763,4 @@ init_upload_history_table()
 init_report_batch_tables()
 init_report_analyses_table()
 init_assistant_tables()
+init_support_tickets_table()

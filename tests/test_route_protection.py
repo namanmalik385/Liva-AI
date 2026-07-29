@@ -15,6 +15,7 @@ PROTECTED_ROUTE_FUNCTIONS = {
     "routes/timeline.py": {"timeline"},
     "routes/profile.py": {"profile", "update_profile"},
     "routes/report_batches.py": {"create_report_batch"},
+    "routes/support.py": {"submit_help_support"},
 }
 
 
