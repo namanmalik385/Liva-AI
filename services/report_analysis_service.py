@@ -13,7 +13,7 @@ from services.biomarker_service import (
 from services.prompt_builder import calculate_health_score
 
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 
 class ReportNotFoundError(Exception):
@@ -102,7 +102,7 @@ def _fallback_summary(health_status, biomarkers):
         metric
         for metric in available
         if biomarkers[metric]["status"]
-        not in ("normal", "negative")
+        not in ("normal", "non-reactive")
     ]
     changed = [
         metric

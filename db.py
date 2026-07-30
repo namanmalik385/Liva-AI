@@ -606,6 +606,46 @@ def init_report_batch_tables():
         conn.commit()
 
 
+def init_report_documents_table():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS report_documents (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                report_id INTEGER NOT NULL
+                    REFERENCES reports(id) ON DELETE CASCADE,
+                batch_id TEXT NOT NULL
+                    REFERENCES report_batches(id) ON DELETE CASCADE,
+                file_index INTEGER NOT NULL,
+                report_type TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                storage_key TEXT NOT NULL UNIQUE,
+                mime_type TEXT NOT NULL,
+                size_bytes BIGINT NOT NULL CHECK (size_bytes >= 0),
+                sha256 TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (batch_id, file_index)
+            )
+            """)
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    report_documents_user_created_idx
+                ON report_documents (user_id, created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    report_documents_report_idx
+                ON report_documents (report_id)
+                """
+            )
+        conn.commit()
+
+
 def init_report_analyses_table():
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -852,15 +892,76 @@ def get_recent_reports(user_id, limit=3):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT report_type, date_uploaded
-                   FROM upload_history
-                   WHERE user_id = %s
-                   ORDER BY date_uploaded DESC
-                   LIMIT %s""",
+                """
+                SELECT
+                    history.report_type,
+                    history.date_uploaded,
+                    document.id,
+                    document.report_id,
+                    document.original_filename,
+                    document.mime_type,
+                    document.size_bytes
+                FROM upload_history AS history
+                LEFT JOIN report_documents AS document
+                  ON document.batch_id = history.batch_id
+                 AND document.report_type = history.report_type
+                WHERE history.user_id = %s
+                ORDER BY history.date_uploaded DESC, history.id DESC
+                LIMIT %s
+                """,
                 (user_id, limit)
             )
             rows = cur.fetchall()
-        return [{"report_type": row[0], "date_uploaded": row[1]} for row in rows]
+        return [
+            {
+                "report_type": row[0],
+                "date_uploaded": row[1],
+                "document_id": row[2],
+                "report_id": row[3],
+                "filename": row[4],
+                "mime_type": row[5],
+                "size_bytes": row[6],
+                "file_available": row[2] is not None,
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_report_document_for_user(document_id, user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    report_id,
+                    report_type,
+                    original_filename,
+                    storage_key,
+                    mime_type,
+                    size_bytes,
+                    created_at
+                FROM report_documents
+                WHERE id = %s AND user_id = %s
+                """,
+                (document_id, user_id),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "document_id": row[0],
+            "report_id": row[1],
+            "report_type": row[2],
+            "filename": row[3],
+            "storage_key": row[4],
+            "mime_type": row[5],
+            "size_bytes": row[6],
+            "created_at": row[7],
+        }
     finally:
         conn.close()
 
@@ -1001,10 +1102,12 @@ def complete_report_batch(
     report_data,
     file_results,
     response_payload,
+    document_results=None,
 ):
     """Atomically save one report snapshot and complete its upload batch."""
     now = datetime.now(timezone.utc)
     date_added = now.strftime("%Y-%m-%d %H:%M:%S")
+    document_results = document_results or []
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1107,6 +1210,43 @@ def complete_report_batch(
                         item["report_type"],
                         date_added,
                         batch_id,
+                    ),
+                )
+
+            for document in document_results:
+                cur.execute(
+                    """
+                    INSERT INTO report_documents
+                        (
+                            id,
+                            user_id,
+                            report_id,
+                            batch_id,
+                            file_index,
+                            report_type,
+                            original_filename,
+                            storage_key,
+                            mime_type,
+                            size_bytes,
+                            sha256
+                        )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s
+                    )
+                    """,
+                    (
+                        document["document_id"],
+                        user_id,
+                        report_id,
+                        batch_id,
+                        document["file_index"],
+                        document["report_type"],
+                        document["original_filename"],
+                        document["storage_key"],
+                        document["mime_type"],
+                        document["size_bytes"],
+                        document["sha256"],
                     ),
                 )
 
@@ -1761,6 +1901,7 @@ init_auth_tables()
 init_reports_table()
 init_upload_history_table()
 init_report_batch_tables()
+init_report_documents_table()
 init_report_analyses_table()
 init_assistant_tables()
 init_support_tickets_table()

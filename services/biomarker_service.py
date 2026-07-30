@@ -67,9 +67,52 @@ METRIC_UNITS = {
     "ultrasound_prediction": None,
 }
 
+HEPATITIS_METRICS = ("hbsag", "anti_hcv")
+
 
 def report_to_dict(report_row):
     return dict(zip(REPORT_FIELDS, report_row))
+
+
+def _is_reactive(value):
+    if value is None:
+        return None
+
+    normalized = str(value).strip().lower()
+    if normalized in {
+        "0",
+        "0.0",
+        "-ve",
+        "negative",
+        "non-reactive",
+        "nonreactive",
+    }:
+        return False
+    if normalized in {
+        "1",
+        "1.0",
+        "+ve",
+        "positive",
+        "reactive",
+    }:
+        return True
+
+    try:
+        return float(value) != 0
+    except (TypeError, ValueError):
+        return None
+
+
+def metric_response_value(metric, value):
+    if value is None:
+        return None
+    if metric not in HEPATITIS_METRICS:
+        return value
+
+    reactive = _is_reactive(value)
+    if reactive is None:
+        return None
+    return "+ve" if reactive else "-ve"
 
 
 def metric_status(metric, value):
@@ -137,8 +180,11 @@ def metric_status(metric, value):
     if metric == "afp":
         return "normal" if value < 10 else "elevated"
 
-    if metric in ("hbsag", "anti_hcv"):
-        return "negative" if int(value) == 0 else "positive"
+    if metric in HEPATITIS_METRICS:
+        reactive = _is_reactive(value)
+        if reactive is None:
+            return None
+        return "reactive" if reactive else "non-reactive"
 
     return None
 
@@ -203,7 +249,7 @@ def build_dashboard_metrics(reports):
     for metric in METRIC_ORDER:
         current, previous = _latest_values(reports, metric)
         latest_metrics[metric] = {
-            "score": current,
+            "score": metric_response_value(metric, current),
             "status": metric_status(metric, current),
             "trend": dashboard_metric_trend(current, previous, metric),
         }
@@ -227,7 +273,7 @@ def build_current_report_metrics(current_report, previous_report=None):
             continue
 
         biomarkers[metric] = {
-            "value": current,
+            "value": metric_response_value(metric, current),
             "trend": report_metric_trend(
                 current,
                 previous_report.get(metric),
@@ -247,7 +293,7 @@ def fallback_biomarker_insight(metric, metric_data):
 
     if value is None:
         return None
-    if status in ("normal", "negative"):
+    if status in ("normal", "non-reactive"):
         return (
             f"Your {label} result is within the expected range in the "
             "current report."
@@ -262,7 +308,7 @@ def fallback_biomarker_insight(metric, metric_data):
             f"Your {label} result is below the expected range and should be "
             "reviewed with your clinician."
         )
-    if status in ("elevated", "positive", "abnormal"):
+    if status in ("elevated", "reactive", "abnormal"):
         return (
             f"Your {label} result needs monitoring and should be interpreted "
             "with the rest of your clinical information."

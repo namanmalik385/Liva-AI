@@ -7,6 +7,7 @@ from calculators.apri import calculate_apri
 
 from db import add_report
 from services.auth_service import auth_required, current_user_id
+from services.biomarker_service import metric_response_value
 
 calculate_bp = Blueprint("calculate", __name__)
 
@@ -121,6 +122,11 @@ def calculate():
             "apri": apri_score,
             "ultrasound_prediction": patient_data.get("ultrasound_prediction"),
         }
+        for metric in ("hbsag", "anti_hcv"):
+            report_data[metric] = metric_response_value(
+                metric,
+                report_data[metric],
+            )
         clear_patient_data(user_id)
 
         return jsonify({

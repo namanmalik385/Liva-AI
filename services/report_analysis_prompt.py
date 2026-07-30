@@ -23,7 +23,7 @@ For every biomarker with a non-null value, return one short explanation that:
 - refers to its current status;
 - mentions its trend only when a trend is available;
 - uses cautious, patient-friendly language;
-- recommends clinical review when its status is elevated, low, positive,
+- recommends clinical review when its status is elevated, low, reactive,
   abnormal, or borderline.
 
 Also return a concise 2-4 sentence overall summary using only the supplied

@@ -15,6 +15,8 @@ from models.patient_data import get_patient_data
 from db import add_uploaded_report
 from db import get_recent_reports
 from services.auth_service import auth_required, current_user_id
+from services.biomarker_service import metric_response_value
+from services.recent_reports_service import format_recent_reports
 
 upload_bp = Blueprint("upload", __name__)
 
@@ -31,7 +33,6 @@ LAB_REPORT_TYPES = {
 SUPPORTED_REPORT_TYPES = LAB_REPORT_TYPES | {"ultrasound"}
 LAB_EXTENSIONS = {".pdf"}
 ULTRASOUND_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
@@ -60,6 +61,17 @@ def _validated_extension(file, report_type):
         raise ValueError("The uploaded lab report must be a valid PDF")
 
     return extension
+
+
+def _public_biomarker_values(values):
+    output = dict(values)
+    for metric in ("hbsag", "anti_hcv"):
+        if metric in output:
+            output[metric] = metric_response_value(
+                metric,
+                output[metric],
+            )
+    return output
 
 
 @upload_bp.route("/upload", methods=["POST"])
@@ -158,8 +170,8 @@ def upload_file():
         return jsonify({
             "success": True,
             "report_type": report_type,
-            "extracted_data": results,
-            "patient_data": patient_data
+            "extracted_data": _public_biomarker_values(results),
+            "patient_data": _public_biomarker_values(patient_data),
         })
 
     except Exception:
@@ -191,7 +203,7 @@ def recent_reports(requested_user_id=None):
             "error": "Access denied",
         }), 403
 
-    reports = get_recent_reports(user_id)
+    reports = format_recent_reports(get_recent_reports(user_id))
 
     return jsonify({
         "success": True,

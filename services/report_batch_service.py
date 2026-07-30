@@ -1,3 +1,6 @@
+from copy import deepcopy
+import hashlib
+import logging
 import os
 import uuid
 
@@ -9,7 +12,15 @@ from db import (
     get_user_profile_record,
     mark_report_batch_failed,
 )
-from services.biomarker_service import metric_status
+from services.biomarker_service import metric_response_value, metric_status
+from services.report_document_storage import (
+    ReportDocumentStorageError,
+    delete_report_documents,
+    upload_report_document,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 LAB_REPORT_TYPES = {
@@ -22,6 +33,12 @@ LAB_REPORT_TYPES = {
 SUPPORTED_REPORT_TYPES = LAB_REPORT_TYPES | {"ultrasound"}
 LAB_EXTENSIONS = {".pdf"}
 ULTRASOUND_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
 MAX_BATCH_FILES = int(os.getenv("MAX_BATCH_FILES", "6"))
 UPLOAD_FOLDER = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "uploads")
@@ -135,13 +152,15 @@ def _validated_extension(file, report_type):
     header = file.stream.read(8)
     file.stream.seek(0)
     is_pdf = header.startswith(b"%PDF-")
-    is_image = (
-        header.startswith(b"\x89PNG\r\n\x1a\n")
-        or header.startswith(b"\xff\xd8\xff")
+    is_png = header.startswith(b"\x89PNG\r\n\x1a\n")
+    is_jpeg = header.startswith(b"\xff\xd8\xff")
+    valid_ultrasound = (
+        (extension == ".png" and is_png)
+        or (extension in {".jpg", ".jpeg"} and is_jpeg)
     )
-    if report_type == "ultrasound" and not is_image:
+    if report_type == "ultrasound" and not valid_ultrasound:
         raise ReportBatchError(
-            "The ultrasound must be a valid JPEG or PNG image"
+            "The ultrasound content must match its JPEG or PNG extension"
         )
     if report_type != "ultrasound" and not is_pdf:
         raise ReportBatchError(
@@ -194,6 +213,86 @@ def _normalize_extracted_data(report_type, extracted):
 
 def _has_extracted_value(extracted):
     return any(value is not None for value in extracted.values())
+
+
+def _original_filename(file, report_type, extension):
+    candidate = (file.filename or "").replace("\\", "/").split("/")[-1]
+    candidate = "".join(
+        character
+        for character in candidate
+        if character.isprintable() and character != "\x00"
+    ).strip()
+    return candidate[:255] or f"{report_type}{extension}"
+
+
+def _sha256(filepath):
+    digest = hashlib.sha256()
+    with open(filepath, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _store_report_documents(
+    user_id,
+    batch_id,
+    files,
+    report_types,
+    extensions,
+    temporary_paths,
+    file_results,
+    uploaded_storage_keys,
+):
+    document_results = []
+    for (
+        file,
+        report_type,
+        extension,
+        filepath,
+        file_result,
+    ) in zip(
+        files,
+        report_types,
+        extensions,
+        temporary_paths,
+        file_results,
+    ):
+        document_id = str(uuid.uuid4())
+        storage_key = (
+            f"reports/{user_id}/{batch_id}/{document_id}{extension}"
+        )
+        original_filename = _original_filename(
+            file,
+            report_type,
+            extension,
+        )
+        document = {
+            "document_id": document_id,
+            "file_index": file_result["file_index"],
+            "report_type": report_type,
+            "original_filename": original_filename,
+            "storage_key": storage_key,
+            "mime_type": MIME_TYPES[extension],
+            "size_bytes": os.path.getsize(filepath),
+            "sha256": _sha256(filepath),
+        }
+
+        uploaded_storage_keys.append(storage_key)
+        upload_report_document(
+            filepath=filepath,
+            storage_key=storage_key,
+            mime_type=document["mime_type"],
+            original_filename=original_filename,
+            metadata={
+                "document-id": document_id,
+                "batch-id": batch_id,
+                "user-id": user_id,
+                "report-type": report_type,
+            },
+        )
+        file_result.update(document)
+        document_results.append(document)
+    return document_results
 
 
 def calculate_batch_metrics(age, report_data):
@@ -265,12 +364,25 @@ def calculate_batch_metrics(age, report_data):
     }
 
 
+def _viewer_type(mime_type):
+    if mime_type == "application/pdf":
+        return "pdf"
+    if isinstance(mime_type, str) and mime_type.startswith("image/"):
+        return "image"
+    return None
+
+
 def _public_file_results(file_results):
     return [
         {
             "file_index": item["file_index"],
             "report_type": item["report_type"],
             "status": item["status"],
+            "document_id": item.get("document_id"),
+            "filename": item.get("original_filename"),
+            "mime_type": item.get("mime_type"),
+            "viewer_type": _viewer_type(item.get("mime_type")),
+            "file_available": item.get("document_id") is not None,
             "extracted_fields": sorted(
                 key
                 for key, value in item["extracted_data"].items()
@@ -283,7 +395,7 @@ def _public_file_results(file_results):
 
 def _build_response(batch_id, file_results, report_data, calculations):
     biomarkers = {
-        field: report_data.get(field)
+        field: metric_response_value(field, report_data.get(field))
         for field in REPORT_FIELDS
         if field != "ast_uln"
     }
@@ -303,6 +415,19 @@ def _build_response(batch_id, file_results, report_data, calculations):
     }
 
 
+def _format_replayed_response(response):
+    replay = deepcopy(response)
+    biomarkers = replay.get("report", {}).get("biomarkers")
+    if isinstance(biomarkers, dict):
+        for metric in ("hbsag", "anti_hcv"):
+            if metric in biomarkers:
+                biomarkers[metric] = metric_response_value(
+                    metric,
+                    biomarkers[metric],
+                )
+    return replay
+
+
 def process_report_batch(user_id, files, report_types, idempotency_key):
     normalized_key = validate_idempotency_key(idempotency_key)
     normalized_types = validate_batch_manifest(files, report_types)
@@ -319,7 +444,9 @@ def process_report_batch(user_id, files, report_types, idempotency_key):
             batch_record["status"] == "completed"
             and isinstance(batch_record["response"], dict)
         ):
-            replay = dict(batch_record["response"])
+            replay = _format_replayed_response(
+                batch_record["response"]
+            )
             replay["idempotent_replay"] = True
             return replay, 200
         if batch_record["status"] == "processing":
@@ -338,6 +465,8 @@ def process_report_batch(user_id, files, report_types, idempotency_key):
     batch_id = batch_record["batch_id"]
     temporary_paths = []
     file_results = []
+    uploaded_storage_keys = []
+    batch_completed = False
 
     try:
         profile = get_user_profile_record(user_id)
@@ -420,6 +549,16 @@ def process_report_batch(user_id, files, report_types, idempotency_key):
         calculations = calculate_batch_metrics(age, report_data)
         report_data["fib4"] = calculations["fib4"]["value"]
         report_data["apri"] = calculations["apri"]["value"]
+        document_results = _store_report_documents(
+            user_id,
+            batch_id,
+            files,
+            normalized_types,
+            validated,
+            temporary_paths,
+            file_results,
+            uploaded_storage_keys,
+        )
         response = _build_response(
             batch_id,
             file_results,
@@ -433,9 +572,23 @@ def process_report_batch(user_id, files, report_types, idempotency_key):
             report_data,
             file_results,
             response,
+            document_results,
         )
+        batch_completed = True
         return completed, 201
 
+    except ReportDocumentStorageError as error:
+        mark_report_batch_failed(
+            batch_id,
+            user_id,
+            "Private report storage is unavailable",
+            file_results,
+        )
+        raise ReportBatchError(
+            "Private report storage is unavailable",
+            503,
+            batch_id,
+        ) from error
     except ReportBatchError as error:
         mark_report_batch_failed(
             batch_id,
@@ -458,6 +611,14 @@ def process_report_batch(user_id, files, report_types, idempotency_key):
             batch_id,
         ) from error
     finally:
+        if not batch_completed and uploaded_storage_keys:
+            try:
+                delete_report_documents(uploaded_storage_keys)
+            except ReportDocumentStorageError:
+                logger.exception(
+                    "Could not clean up private objects for failed batch %s",
+                    batch_id,
+                )
         for filepath in temporary_paths:
             try:
                 os.remove(filepath)

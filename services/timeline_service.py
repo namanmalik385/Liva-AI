@@ -2,7 +2,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 from db import get_timeline_records
-from services.biomarker_service import METRIC_ORDER, metric_status
+from services.biomarker_service import (
+    METRIC_ORDER,
+    metric_response_value,
+    metric_status,
+)
 from services.prompt_builder import calculate_health_score
 
 
@@ -195,11 +199,11 @@ def _trend_text(current_score, previous_score, period):
 
 STATUS_SEVERITY = {
     "normal": 0,
-    "negative": 0,
+    "non-reactive": 0,
     "borderline": 1,
     "low": 2,
     "elevated": 2,
-    "positive": 2,
+    "reactive": 2,
     "abnormal": 2,
 }
 
@@ -226,7 +230,7 @@ def _metric_movement(metric, current, previous):
             else "worsened"
         )
 
-    if current_status in ("normal", "negative"):
+    if current_status in ("normal", "non-reactive"):
         return "stable"
     if metric in CATEGORICAL_METRICS:
         return "stable"
@@ -265,7 +269,7 @@ def _trend_sub_summary(current_metrics, previous_metrics):
     worsened = comparable.count("worsened")
     concerning = sum(
         metric_status(metric, current_metrics[metric])
-        in {"borderline", "elevated", "low", "positive", "abnormal"}
+        in {"borderline", "elevated", "low", "reactive", "abnormal"}
         for metric in available
     )
 
@@ -334,7 +338,10 @@ def build_timeline(user_id, period, now=None):
             "health_score": snapshot["latest_health_score"],
             "biomarkers": {
                 metric: {
-                    "value": snapshot["metrics"][metric],
+                    "value": metric_response_value(
+                        metric,
+                        snapshot["metrics"][metric],
+                    ),
                     "trend": _metric_trend(
                         metric,
                         snapshot["metrics"][metric],
@@ -377,7 +384,10 @@ def build_timeline(user_id, period, now=None):
         ),
         "biomarkers": {
             metric: {
-                "value": current["metrics"][metric],
+                "value": metric_response_value(
+                    metric,
+                    current["metrics"][metric],
+                ),
                 "trend": _metric_trend(
                     metric,
                     current["metrics"][metric],

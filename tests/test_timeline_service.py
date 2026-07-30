@@ -86,6 +86,11 @@ class TimelineServiceTests(unittest.TestCase):
         )
         self.assertEqual(result["biomarkers"]["alt"]["value"], 30)
         self.assertEqual(result["biomarkers"]["alt"]["trend"], "-70%")
+        self.assertEqual(result["biomarkers"]["hbsag"]["value"], "-ve")
+        self.assertEqual(
+            result["biomarkers"]["anti_hcv"]["value"],
+            "-ve",
+        )
         self.assertTrue(result["health_trend"].startswith("+"))
         self.assertEqual(
             result["health_history"][-1]["start_date"],

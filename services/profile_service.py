@@ -144,7 +144,7 @@ def _biomarkers_status(report):
         "borderline",
         "elevated",
         "low",
-        "positive",
+        "reactive",
         "abnormal",
     }
     if any(

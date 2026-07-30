@@ -1,4 +1,5 @@
 from db import get_connection
+from services.biomarker_service import metric_response_value
 
 
 def calculate_health_score(user_row, latest_report=None):
@@ -275,7 +276,10 @@ def build_llm_prompt(user_id):
                 f"GGT: {fmt(ggt)} U/L, "
                 f"Bilirubin: {fmt(bilirubin)} mg/dL, Albumin: {fmt(albumin)} g/dL, "
                 f"Platelets: {fmt(platelets)}, INR: {fmt(inr)}, PT: {fmt(pt)}, "
-                f"AFP: {fmt(afp)}, HBsAg: {fmt(hbsag)}, Anti-HCV: {fmt(anti_hcv)}, "
+                f"AFP: {fmt(afp)}, "
+                f"HBsAg: {fmt(metric_response_value('hbsag', hbsag))}, "
+                f"Anti-HCV: "
+                f"{fmt(metric_response_value('anti_hcv', anti_hcv))}, "
                 f"APRI: {apri if apri is not None else 'insufficient data'}, "
                 f"FIB-4: {fib4 if fib4 is not None else 'insufficient data'}, "
                 f"Liver Imaging Result: {fmt(ultrasound_prediction)}"

@@ -124,6 +124,7 @@ and a `Retry-After` response header:
 | `GET` | `/dashboard` | Load dashboard |
 | `GET` | `/recent-reports` | Load three most recent uploaded files |
 | `POST` | `/report-batches` | Upload and process one or more reports |
+| `GET` | `/report-documents/<document_id>/view-url` | Create a short-lived private report viewing URL |
 | `POST` | `/report-analysis` | Load analysis for a saved report |
 | `POST` | `/health-insights` | Load expanded health insights |
 | `POST` | `/assistant/chat` | Start or continue assistant conversation |
@@ -472,8 +473,8 @@ Success — `200 OK`:
         "trend": null
       },
       "hbsag": {
-        "score": 0,
-        "status": "negative",
+        "score": "-ve",
+        "status": "non-reactive",
         "trend": "changed"
       },
       "anti_hcv": {
@@ -548,15 +549,39 @@ Success — `200 OK`:
   "recent_reports": [
     {
       "report_type": "lft",
-      "date_uploaded": "2026-07-29 14:30:45"
+      "title": "Liver Function Test",
+      "date_uploaded": "July 30, 2026",
+      "document_id": "7288a44c-645d-49f7-bd94-da657ab9d08e",
+      "report_id": 42,
+      "filename": "sample_lft.pdf",
+      "mime_type": "application/pdf",
+      "size_bytes": 184512,
+      "viewer_type": "pdf",
+      "file_available": true
     },
     {
       "report_type": "cbc",
-      "date_uploaded": "2026-07-29 14:30:45"
+      "title": "Complete Blood Count",
+      "date_uploaded": "July 30, 2026",
+      "document_id": "0d2b2480-a56c-4ccb-85f2-4f27a34de156",
+      "report_id": 42,
+      "filename": "sample_cbc.pdf",
+      "mime_type": "application/pdf",
+      "size_bytes": 126981,
+      "viewer_type": "pdf",
+      "file_available": true
     },
     {
       "report_type": "ultrasound",
-      "date_uploaded": "2026-07-20 11:12:08"
+      "title": "Ultrasound Report",
+      "date_uploaded": "July 20, 2026",
+      "document_id": null,
+      "report_id": null,
+      "filename": null,
+      "mime_type": null,
+      "size_bytes": null,
+      "viewer_type": null,
+      "file_available": false
     }
   ]
 }
@@ -566,8 +591,55 @@ The endpoint returns at most three uploaded files. Every file in a batch has
 its own upload-history entry. A user with no uploads receives an empty
 `recent_reports` array.
 
+`date_uploaded` is a display string in `Month D, YYYY` format, such as
+`July 30, 2026`.
+
+Reports uploaded before private file storage was introduced have
+`file_available: false`. The frontend must disable the open action for those
+rows and may display `Original file unavailable`.
+
 `GET /recent-reports/<user_id>` remains for compatibility but should not be
 used by the new frontend.
+
+### 6.1 Open an original report
+
+Only request a viewing URL after the user taps a row whose
+`file_available` value is `true`.
+
+```http
+GET /report-documents/7288a44c-645d-49f7-bd94-da657ab9d08e/view-url
+Authorization: Bearer <access_token>
+```
+
+Success — `200 OK`:
+
+```json
+{
+  "success": true,
+  "document": {
+    "document_id": "7288a44c-645d-49f7-bd94-da657ab9d08e",
+    "report_id": 42,
+    "report_type": "lft",
+    "filename": "sample_lft.pdf",
+    "mime_type": "application/pdf",
+    "size_bytes": 184512,
+    "viewer_type": "pdf",
+    "url": "https://signed-private-url.example/...",
+    "expires_in": 300,
+    "expires_at": "2026-07-30T10:35:00+00:00"
+  }
+}
+```
+
+The URL grants temporary read access to that one private object. Do not save
+or log it. Request a new URL on every tap, open it immediately in the
+PDF/image viewer, and discard it when the viewer closes. The backend verifies
+document ownership before issuing the URL.
+
+Relevant failures:
+
+- `404`: document does not exist or does not belong to the signed-in user.
+- `503`: private document storage or URL generation is unavailable.
 
 ## 7. Batch Report Upload API
 
@@ -607,6 +679,8 @@ Rules:
 - Each file must yield at least one supported extracted value.
 - The entire batch fails if any file fails.
 - Failed batches do not create a report snapshot or upload-history rows.
+- Successful files are retained in private object storage. Object keys and
+  storage credentials are never returned by the API.
 - Onboarding age must already be available.
 
 Example logical multipart body:
@@ -658,6 +732,11 @@ New successful batch — `201 Created`:
         "file_index": 0,
         "report_type": "lft",
         "status": "processed",
+        "document_id": "7288a44c-645d-49f7-bd94-da657ab9d08e",
+        "filename": "sample_lft.pdf",
+        "mime_type": "application/pdf",
+        "viewer_type": "pdf",
+        "file_available": true,
         "extracted_fields": [
           "albumin",
           "alt",
@@ -671,6 +750,11 @@ New successful batch — `201 Created`:
         "file_index": 1,
         "report_type": "cbc",
         "status": "processed",
+        "document_id": "0d2b2480-a56c-4ccb-85f2-4f27a34de156",
+        "filename": "sample_cbc.pdf",
+        "mime_type": "application/pdf",
+        "viewer_type": "pdf",
+        "file_available": true,
         "extracted_fields": [
           "platelets"
         ]
@@ -871,9 +955,9 @@ Success — `200 OK`:
         "insight": null
       },
       "hbsag": {
-        "value": 0,
+        "value": "-ve",
         "trend": "stable",
-        "status": "negative",
+        "status": "non-reactive",
         "insight": "Your HBsAg result is within the expected range in the current report."
       },
       "anti_hcv": {
@@ -1011,8 +1095,8 @@ Success — `200 OK`:
         "summary": null
       },
       "hbsag": {
-        "score": 0,
-        "status": "negative",
+        "score": "-ve",
+        "status": "non-reactive",
         "summary": "Your HBsAg result is within the expected range in the current report."
       },
       "anti_hcv": {
@@ -1245,7 +1329,7 @@ Success — `200 OK`, shortened weekly example:
         "trend": null
       },
       "hbsag": {
-        "value": 0,
+        "value": "-ve",
         "trend": "stable"
       },
       "anti_hcv": {
@@ -1509,12 +1593,16 @@ forward the ticket to an external help-desk platform.
 | `inr` | INR | None | `low`, `normal`, `elevated` |
 | `pt` | Prothrombin time | seconds | `low`, `normal`, `elevated` |
 | `afp` | AFP | ng/mL | `normal`, `elevated` |
-| `hbsag` | HBsAg | None | `negative`, `positive` |
-| `anti_hcv` | Anti-HCV | None | `negative`, `positive` |
+| `hbsag` | HBsAg | None | `non-reactive`, `reactive` |
+| `anti_hcv` | Anti-HCV | None | `non-reactive`, `reactive` |
 | `ultrasound_prediction` | Ultrasound | None | `normal`, `abnormal` |
 
 The frontend should display values supplied by the API without recalculating
 clinical status thresholds.
+
+For both `hbsag` and `anti_hcv`, response values are `-ve` or `+ve`, and
+statuses are `non-reactive` or `reactive`. The backend continues to store
+these categorical results internally as numeric flags.
 
 ## 15. Deprecated and compatibility endpoints
 
@@ -1538,7 +1626,7 @@ Do not use these for new frontend work:
 | Application restore | `POST /auth/refresh` when needed, then `GET /auth/me` |
 | Onboarding | `POST /onboarding` |
 | Dashboard | `GET /dashboard` |
-| Report Upload | `GET /recent-reports`, then `POST /report-batches` |
+| Report Upload | `GET /recent-reports`, `POST /report-batches`, then `GET /report-documents/<document_id>/view-url` on tap |
 | Data Analysis | `POST /report-analysis` using returned `report_id` |
 | AI Health Insights | `POST /health-insights` using the same `report_id` |
 | AI Health Assistant | `POST /assistant/chat` |
@@ -1558,3 +1646,6 @@ Do not use these for new frontend work:
 7. The same report ID may be used for `/health-insights` and to start a
    report-specific `/assistant/chat` conversation.
 8. Dashboard, recent reports, profile, and timeline can then be refreshed.
+9. To open an original upload later, read its `document_id` from
+   `/recent-reports`, request its `/view-url`, and pass the returned temporary
+   URL to the PDF/image viewer.

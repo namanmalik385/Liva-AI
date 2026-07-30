@@ -51,6 +51,7 @@ def _health_status(score):
 
 def _insight_status(insight):
     lowered = insight.lower()
+    monitor_text = lowered.replace("non-reactive", "")
     monitor_words = (
         "elevated",
         "high",
@@ -61,6 +62,7 @@ def _insight_status(insight):
         "monitor",
         "doctor",
         "clinician",
+        "reactive",
     )
     normal_words = (
         "normal",
@@ -69,9 +71,10 @@ def _insight_status(insight):
         "healthy",
         "decreas",
         "recover",
+        "non-reactive",
     )
 
-    if any(word in lowered for word in monitor_words):
+    if any(word in monitor_text for word in monitor_words):
         return "monitor"
     if any(word in lowered for word in normal_words):
         return "normal"
@@ -85,9 +88,21 @@ def _normalize_insight_status(status, body):
 
     if status is not None:
         normalized = str(status).strip().lower()
-        if normalized in ("normal", "positive", "good", "stable"):
+        if normalized in (
+            "normal",
+            "positive",
+            "good",
+            "stable",
+            "non-reactive",
+        ):
             return "normal"
-        if normalized in ("monitor", "warning", "abnormal", "attention"):
+        if normalized in (
+            "monitor",
+            "warning",
+            "abnormal",
+            "attention",
+            "reactive",
+        ):
             return "monitor"
         if normalized == "info":
             return "info"
@@ -111,11 +126,11 @@ def _insight_title(insight, latest_metrics, index):
         status = metric_data.get("status")
         trend = metric_data.get("trend")
 
-        if status in ("normal", "negative"):
+        if status in ("normal", "non-reactive"):
             return f"{label} in normal range"
         if trend and trend.startswith("-") and metric != "albumin":
             return f"{label} improving"
-        if status in ("elevated", "low", "positive"):
+        if status in ("elevated", "low", "reactive"):
             return f"{label} needs monitoring"
         return f"{label} update"
 

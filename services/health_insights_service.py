@@ -52,7 +52,7 @@ def _current_health_status(analysis):
         metric
         for metric, data in biomarkers.items()
         if data["value"] is not None
-        and data["status"] not in ("normal", "negative")
+        and data["status"] not in ("normal", "non-reactive")
     ]
 
     if needs_attention:
@@ -142,10 +142,10 @@ def _positive_metric_changes(biomarkers):
         if (
             metric in ("hbsag", "anti_hcv")
             and trend == "changed"
-            and data["status"] == "negative"
+            and data["status"] == "non-reactive"
         ):
             changes.append({
-                "title": f"{METRIC_LABELS[metric]} now negative",
+                "title": f"{METRIC_LABELS[metric]} now non-reactive",
                 "subtitle": "vs last report",
             })
 
@@ -199,7 +199,7 @@ def _positive_changes(analysis, report_rows):
         metric
         for metric in METRIC_ORDER
         if biomarkers[metric]["value"] is not None
-        and biomarkers[metric]["status"] in ("normal", "negative")
+        and biomarkers[metric]["status"] in ("normal", "non-reactive")
     ]
     for metric in normal_metrics:
         if len(changes) >= 4:
@@ -239,7 +239,7 @@ def _risk_factors(analysis, user_row):
         "borderline": "Monitor trend closely",
         "elevated": "Review with your clinician",
         "low": "Review with your clinician",
-        "positive": "Clinical follow-up advised",
+        "reactive": "Clinical follow-up advised",
         "abnormal": "Imaging review advised",
     }
 
@@ -355,7 +355,7 @@ def _recommendation(analysis, areas):
         for metric in METRIC_ORDER
         if biomarkers[metric]["value"] is not None
         and biomarkers[metric]["status"]
-        not in ("normal", "negative")
+        not in ("normal", "non-reactive")
     ]
 
     recommendation = (
