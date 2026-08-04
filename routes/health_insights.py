@@ -1,5 +1,6 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
+from services.achievement_service import record_insights_explorer
 from services.health_insights_service import build_health_insights
 from services.report_analysis_service import ReportNotFoundError
 from services.auth_service import auth_required, current_user_id
@@ -13,6 +14,7 @@ health_insights_bp = Blueprint("health_insights", __name__)
 def health_insights():
     data = request.get_json(silent=True) or {}
     report_id = data.get("report_id")
+    user_id = current_user_id()
 
     try:
         report_id = int(report_id) if report_id is not None else None
@@ -29,7 +31,7 @@ def health_insights():
 
     try:
         insights = build_health_insights(
-            current_user_id(),
+            user_id,
             report_id,
         )
     except ReportNotFoundError:
@@ -48,6 +50,13 @@ def health_insights():
             "success": False,
             "error": "User not found",
         }), 404
+
+    try:
+        record_insights_explorer(user_id)
+    except Exception:
+        current_app.logger.exception(
+            "Could not unlock Insights Explorer achievement"
+        )
 
     return jsonify({
         "success": True,

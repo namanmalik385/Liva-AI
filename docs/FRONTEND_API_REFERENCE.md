@@ -132,6 +132,7 @@ and a `Retry-After` response header:
 | `GET` | `/profile` | Load profile summary |
 | `PATCH` | `/profile` | Update personal information |
 | `POST` | `/help-support` | Submit a support ticket |
+| `GET` | `/achievements` | Load locked and unlocked achievements |
 
 ## 3. Authentication API
 
@@ -1578,7 +1579,57 @@ Success — `201 Created`:
 The MVP endpoint saves the ticket in PostgreSQL. It does not yet send email or
 forward the ticket to an external help-desk platform.
 
-## 14. Biomarker reference
+## 14. Achievements API
+
+```http
+GET /achievements
+Authorization: Bearer <access_token>
+```
+
+Success — `200 OK`:
+
+```json
+{
+  "success": true,
+  "achievements": [
+    {
+      "title": "First Report Uploaded",
+      "date": "July 2026",
+      "is_unlocked": true
+    },
+    {
+      "title": "Score Improved",
+      "date": null,
+      "is_unlocked": false
+    },
+    {
+      "title": "Trend Tracker",
+      "date": "July 2026",
+      "is_unlocked": true
+    },
+    {
+      "title": "Insights Explorer",
+      "date": null,
+      "is_unlocked": false
+    }
+  ]
+}
+```
+
+Unlock rules:
+
+- `first_report_uploaded`: at least one saved report snapshot exists.
+- `score_improved`: any saved report has a higher calculated health score
+  than the report immediately before it.
+- `trend_tracker`: at least two saved report snapshots exist.
+- `insights_explorer`: the user successfully loads `/health-insights`.
+
+Unlocked achievements remain unlocked. Report-based achievements are
+backfilled from existing report history when `/achievements` is loaded.
+An unsuccessful or reportless Health Insights request does not unlock
+Insights Explorer.
+
+## 15. Biomarker reference
 
 | API key | Display name | Unit | Common statuses |
 |---|---|---|---|
@@ -1604,7 +1655,7 @@ For both `hbsag` and `anti_hcv`, response values are `-ve` or `+ve`, and
 statuses are `non-reactive` or `reactive`. The backend continues to store
 these categorical results internally as numeric flags.
 
-## 15. Deprecated and compatibility endpoints
+## 16. Deprecated and compatibility endpoints
 
 Do not use these for new frontend work:
 
@@ -1617,7 +1668,7 @@ Do not use these for new frontend work:
 | `POST /insights` | Older generalized analysis | `GET /dashboard` and `POST /health-insights` |
 | `GET /recent-reports/<user_id>` | Compatibility route | `GET /recent-reports` |
 
-## 16. Recommended frontend screen mapping
+## 17. Recommended frontend screen mapping
 
 | Frontend screen | API calls |
 |---|---|
@@ -1633,8 +1684,9 @@ Do not use these for new frontend work:
 | Progress Timeline | `GET /timeline?period=weekly|monthly|yearly` |
 | Profile | `GET /profile`, `PATCH /profile` |
 | Help and Support | `POST /help-support` |
+| Achievements | `GET /achievements` |
 
-## 17. Required upload-to-analysis flow
+## 18. Required upload-to-analysis flow
 
 1. User chooses one or more report files and assigns each report type.
 2. Frontend generates one UUID for the logical upload attempt.

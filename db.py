@@ -729,6 +729,73 @@ def init_support_tickets_table():
         conn.commit()
 
 
+def init_user_achievements_table():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_achievements (
+                user_id INTEGER NOT NULL
+                    REFERENCES users(id) ON DELETE CASCADE,
+                achievement_key TEXT NOT NULL,
+                unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, achievement_key)
+            )
+            """)
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    user_achievements_unlocked_idx
+                ON user_achievements (user_id, unlocked_at DESC)
+                """
+            )
+        conn.commit()
+
+
+def unlock_user_achievements(user_id, achievement_keys):
+    keys = list(dict.fromkeys(
+        key
+        for key in achievement_keys
+        if isinstance(key, str) and key
+    ))
+    if not keys:
+        return
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            for key in keys:
+                cur.execute(
+                    """
+                    INSERT INTO user_achievements
+                        (user_id, achievement_key)
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id, achievement_key) DO NOTHING
+                    """,
+                    (user_id, key),
+                )
+        conn.commit()
+
+
+def get_user_achievement_unlocks(user_id):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT achievement_key, unlocked_at
+                FROM user_achievements
+                WHERE user_id = %s
+                ORDER BY unlocked_at ASC, achievement_key ASC
+                """,
+                (user_id,),
+            )
+            return {
+                key: unlocked_at
+                for key, unlocked_at in cur.fetchall()
+            }
+    finally:
+        conn.close()
+
+
 def create_support_ticket(user_id, subject, description):
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -1905,3 +1972,4 @@ init_report_documents_table()
 init_report_analyses_table()
 init_assistant_tables()
 init_support_tickets_table()
+init_user_achievements_table()

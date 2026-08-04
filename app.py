@@ -21,6 +21,7 @@ from routes.profile import profile_bp
 from routes.report_batches import report_batches_bp
 from routes.support import support_bp
 from routes.report_documents import report_documents_bp
+from routes.achievements import achievements_bp
 from services.auth_service import validate_auth_configuration
 
 app = Flask(__name__)
@@ -121,6 +122,7 @@ app.register_blueprint(profile_bp)
 app.register_blueprint(report_batches_bp)
 app.register_blueprint(support_bp)
 app.register_blueprint(report_documents_bp)
+app.register_blueprint(achievements_bp)
 
 @app.route("/", methods=["GET"])
 def home():

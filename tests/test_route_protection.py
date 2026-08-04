@@ -17,6 +17,7 @@ PROTECTED_ROUTE_FUNCTIONS = {
     "routes/report_batches.py": {"create_report_batch"},
     "routes/support.py": {"submit_help_support"},
     "routes/report_documents.py": {"report_document_view_url"},
+    "routes/achievements.py": {"achievements"},
 }
 
 
